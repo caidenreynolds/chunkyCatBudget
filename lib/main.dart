@@ -102,7 +102,8 @@ class BudgetHome extends StatefulWidget {
 class _BudgetHomeState extends State<BudgetHome> {
   final api = BudgetApi();
   var selected = 0;
-  late Future<Map<String, dynamic>> summaryFuture = _loadSummary();
+  Map<String, dynamic>? currentUser;
+  Future<Map<String, dynamic>>? summaryFuture;
 
   final screens = const [
     ('Dashboard', Icons.dashboard_outlined),
@@ -123,12 +124,33 @@ class _BudgetHomeState extends State<BudgetHome> {
     setState(() => summaryFuture = _loadSummary());
   }
 
+  void signIn(Map<String, dynamic> user) {
+    setState(() {
+      currentUser = user;
+      selected = 0;
+      summaryFuture = _loadSummary();
+    });
+  }
+
+  void signOut() {
+    setState(() {
+      currentUser = null;
+      selected = 0;
+      summaryFuture = null;
+    });
+  }
+
   void openScreen(int index) {
     setState(() => selected = index);
   }
 
   @override
   Widget build(BuildContext context) {
+    final user = currentUser;
+    if (user == null) {
+      return LoginScreen(api: api, onSignedIn: signIn);
+    }
+
     return FutureBuilder<Map<String, dynamic>>(
       future: summaryFuture,
       builder: (context, snapshot) {
@@ -155,12 +177,16 @@ class _BudgetHomeState extends State<BudgetHome> {
                 screens: screens,
                 selected: selected,
                 onSelect: openScreen,
+                user: user,
+                onSignOut: signOut,
                 child: child,
               );
             }
             return _PhoneShell(
               selected: selected,
               onSelect: openScreen,
+              user: user,
+              onSignOut: signOut,
               child: child,
             );
           },
@@ -170,17 +196,104 @@ class _BudgetHomeState extends State<BudgetHome> {
   }
 }
 
+class LoginScreen extends StatefulWidget {
+  const LoginScreen({super.key, required this.api, required this.onSignedIn});
+  final BudgetApi api;
+  final ValueChanged<Map<String, dynamic>> onSignedIn;
+
+  @override
+  State<LoginScreen> createState() => _LoginScreenState();
+}
+
+class _LoginScreenState extends State<LoginScreen> {
+  final email = TextEditingController();
+  final displayName = TextEditingController();
+  var signingIn = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final isPhone = MediaQuery.sizeOf(context).width < 600;
+    return Scaffold(
+      body: SafeArea(
+        child: Center(
+          child: SingleChildScrollView(
+            padding: EdgeInsets.all(isPhone ? 18 : 28),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 420),
+              child: Card(
+                child: Padding(
+                  padding: EdgeInsets.all(isPhone ? 18 : 24),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      const Text('Chunky Cat Budget', style: TextStyle(fontSize: 26, fontWeight: FontWeight.w900)),
+                      const SizedBox(height: 6),
+                      const Text('Sign in to choose or manage budget profiles.', style: TextStyle(color: Color(0xFF667085))),
+                      const SizedBox(height: 22),
+                      TextField(
+                        controller: email,
+                        keyboardType: TextInputType.emailAddress,
+                        autofillHints: const [AutofillHints.email],
+                        decoration: const InputDecoration(labelText: 'Email'),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: displayName,
+                        autofillHints: const [AutofillHints.name],
+                        decoration: const InputDecoration(labelText: 'Display name'),
+                      ),
+                      const SizedBox(height: 18),
+                      SizedBox(
+                        height: 50,
+                        child: FilledButton.icon(
+                          onPressed: signingIn ? null : _signIn,
+                          icon: signingIn ? const SizedBox.square(dimension: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.login),
+                          label: const Text('Sign In'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _signIn() async {
+    setState(() => signingIn = true);
+    try {
+      final user = Map<String, dynamic>.from(await widget.api.post('/api/users', {
+        'email': email.text.trim(),
+        'display_name': displayName.text.trim(),
+      }));
+      widget.onSignedIn(user);
+    } catch (error) {
+      if (!mounted) return;
+      toast(context, error.toString());
+    } finally {
+      if (mounted) setState(() => signingIn = false);
+    }
+  }
+}
+
 class _DesktopShell extends StatelessWidget {
   const _DesktopShell({
     required this.screens,
     required this.selected,
     required this.onSelect,
+    required this.user,
+    required this.onSignOut,
     required this.child,
   });
 
   final List<(String, IconData)> screens;
   final int selected;
   final ValueChanged<int> onSelect;
+  final Map<String, dynamic> user;
+  final VoidCallback onSignOut;
   final Widget child;
 
   @override
@@ -189,7 +302,16 @@ class _DesktopShell extends StatelessWidget {
       body: Row(
         children: [
           _Sidebar(screens: screens, selected: selected, onSelect: onSelect),
-          Expanded(child: SafeArea(child: child)),
+          Expanded(
+            child: SafeArea(
+              child: Column(
+                children: [
+                  _SignedInBar(user: user, onSignOut: onSignOut),
+                  Expanded(child: child),
+                ],
+              ),
+            ),
+          ),
         ],
       ),
     );
@@ -200,6 +322,8 @@ class _PhoneShell extends StatelessWidget {
   const _PhoneShell({
     required this.selected,
     required this.onSelect,
+    required this.user,
+    required this.onSignOut,
     required this.child,
   });
 
@@ -207,12 +331,20 @@ class _PhoneShell extends StatelessWidget {
 
   final int selected;
   final ValueChanged<int> onSelect;
+  final Map<String, dynamic> user;
+  final VoidCallback onSignOut;
   final Widget child;
 
   @override
   Widget build(BuildContext context) {
     final navIndex = routes.contains(selected) ? routes.indexOf(selected) : routes.length - 1;
     return Scaffold(
+      appBar: AppBar(
+        title: Text(user['email']?.toString() ?? 'Signed in'),
+        actions: [
+          IconButton(onPressed: onSignOut, tooltip: 'Sign out', icon: const Icon(Icons.logout)),
+        ],
+      ),
       body: SafeArea(child: child),
       bottomNavigationBar: NavigationBar(
         selectedIndex: navIndex,
@@ -224,6 +356,35 @@ class _PhoneShell extends StatelessWidget {
           NavigationDestination(icon: Icon(Icons.swap_horiz_outlined), selectedIcon: Icon(Icons.swap_horiz), label: 'Move'),
           NavigationDestination(icon: Icon(Icons.account_balance_wallet_outlined), selectedIcon: Icon(Icons.account_balance_wallet), label: 'Accounts'),
           NavigationDestination(icon: Icon(Icons.menu), selectedIcon: Icon(Icons.menu_open), label: 'More'),
+        ],
+      ),
+    );
+  }
+}
+
+class _SignedInBar extends StatelessWidget {
+  const _SignedInBar({required this.user, required this.onSignOut});
+  final Map<String, dynamic> user;
+  final VoidCallback onSignOut;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(20, 10, 20, 10),
+      color: Colors.white,
+      child: Row(
+        children: [
+          const Icon(Icons.person_outline, size: 20),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              user['email']?.toString() ?? 'Signed in',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontWeight: FontWeight.w700),
+            ),
+          ),
+          TextButton.icon(onPressed: onSignOut, icon: const Icon(Icons.logout), label: const Text('Sign Out')),
         ],
       ),
     );
