@@ -56,6 +56,26 @@ class AccountIn(BaseModel):
     is_active: bool = True
 
 
+class UserIn(BaseModel):
+    email: str = Field(min_length=3)
+    display_name: str = Field(default="", max_length=120)
+
+
+class BudgetProfileIn(BaseModel):
+    name: str = Field(min_length=1)
+    owner_user_id: int
+
+
+class InvitationIn(BaseModel):
+    email: str = Field(min_length=3)
+    role: Literal["admin", "read_only"]
+    invited_by_user_id: int
+
+
+class AcceptInvitationIn(BaseModel):
+    user_id: int
+
+
 class PaycheckProfileIn(BaseModel):
     gross_pay_amount: float = Field(ge=0)
     net_pay_amount: float = Field(ge=0)
@@ -110,12 +130,43 @@ def init_db() -> None:
             """
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                email TEXT UNIQUE,
+                email TEXT NOT NULL UNIQUE,
+                display_name TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS budget_profiles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                owner_user_id INTEGER NOT NULL REFERENCES users(id),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS user_profile_access (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL REFERENCES users(id),
+                profile_id INTEGER NOT NULL REFERENCES budget_profiles(id),
+                role TEXT NOT NULL CHECK (role IN ('admin', 'read_only')),
+                created_at TEXT NOT NULL,
+                UNIQUE(user_id, profile_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS profile_invitations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                profile_id INTEGER NOT NULL REFERENCES budget_profiles(id),
+                email TEXT NOT NULL,
+                role TEXT NOT NULL CHECK (role IN ('admin', 'read_only')),
+                invited_by_user_id INTEGER NOT NULL REFERENCES users(id),
+                accepted_by_user_id INTEGER REFERENCES users(id),
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL,
+                accepted_at TEXT
             );
 
             CREATE TABLE IF NOT EXISTS accounts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                profile_id INTEGER NOT NULL DEFAULT 1 REFERENCES budget_profiles(id),
                 name TEXT NOT NULL,
                 type TEXT NOT NULL DEFAULT 'checking',
                 balance REAL NOT NULL DEFAULT 0,
@@ -125,16 +176,19 @@ def init_db() -> None:
             );
 
             CREATE TABLE IF NOT EXISTS paycheck_profiles (
-                id INTEGER PRIMARY KEY CHECK (id = 1),
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                profile_id INTEGER NOT NULL DEFAULT 1 REFERENCES budget_profiles(id),
                 gross_pay_amount REAL NOT NULL,
                 net_pay_amount REAL NOT NULL,
                 net_pay_mode TEXT NOT NULL,
                 pay_frequency TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+                updated_at TEXT NOT NULL,
+                UNIQUE(profile_id)
             );
 
             CREATE TABLE IF NOT EXISTS budget_chunks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                profile_id INTEGER NOT NULL DEFAULT 1 REFERENCES budget_profiles(id),
                 name TEXT NOT NULL,
                 account_id INTEGER NOT NULL REFERENCES accounts(id),
                 amount_per_paycheck REAL NOT NULL,
@@ -146,6 +200,7 @@ def init_db() -> None:
 
             CREATE TABLE IF NOT EXISTS paychecks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                profile_id INTEGER NOT NULL DEFAULT 1 REFERENCES budget_profiles(id),
                 account_id INTEGER NOT NULL REFERENCES accounts(id),
                 gross_amount REAL NOT NULL,
                 net_amount REAL NOT NULL,
@@ -163,6 +218,7 @@ def init_db() -> None:
 
             CREATE TABLE IF NOT EXISTS money_movements (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                profile_id INTEGER NOT NULL DEFAULT 1 REFERENCES budget_profiles(id),
                 source_type TEXT NOT NULL,
                 source_id INTEGER,
                 destination_type TEXT NOT NULL,
@@ -174,6 +230,7 @@ def init_db() -> None:
 
             CREATE TABLE IF NOT EXISTS transactions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                profile_id INTEGER NOT NULL DEFAULT 1 REFERENCES budget_profiles(id),
                 account_id INTEGER NOT NULL REFERENCES accounts(id),
                 amount REAL NOT NULL,
                 description TEXT NOT NULL DEFAULT '',
@@ -191,6 +248,56 @@ def init_db() -> None:
             );
             """
         )
+        migrate_db(conn)
+
+
+def column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    return any(row["name"] == column for row in conn.execute(f"PRAGMA table_info({table})").fetchall())
+
+
+def migrate_db(conn: sqlite3.Connection) -> None:
+    stamp = now()
+    if not column_exists(conn, "users", "display_name"):
+        conn.execute("ALTER TABLE users ADD COLUMN display_name TEXT NOT NULL DEFAULT ''")
+
+    existing_user = conn.execute("SELECT * FROM users ORDER BY id LIMIT 1").fetchone()
+    if existing_user is None:
+        cursor = conn.execute(
+            "INSERT INTO users (email, display_name, created_at) VALUES (?, ?, ?)",
+            ("owner@example.local", "Default Owner", stamp),
+        )
+        owner_id = cursor.lastrowid
+    else:
+        owner_id = existing_user["id"]
+
+    existing_profile = conn.execute("SELECT * FROM budget_profiles ORDER BY id LIMIT 1").fetchone()
+    if existing_profile is None:
+        cursor = conn.execute(
+            """
+            INSERT INTO budget_profiles (name, owner_user_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            ("Default Budget", owner_id, stamp, stamp),
+        )
+        profile_id = cursor.lastrowid
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO user_profile_access (user_id, profile_id, role, created_at)
+            VALUES (?, ?, 'admin', ?)
+            """,
+            (owner_id, profile_id, stamp),
+        )
+    else:
+        profile_id = existing_profile["id"]
+
+    for table in ["accounts", "budget_chunks", "paychecks", "money_movements", "transactions"]:
+        if not column_exists(conn, table, "profile_id"):
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN profile_id INTEGER NOT NULL DEFAULT 1 REFERENCES budget_profiles(id)")
+        conn.execute(f"UPDATE {table} SET profile_id = ? WHERE profile_id IS NULL OR profile_id = 1", (profile_id,))
+
+    if not column_exists(conn, "paycheck_profiles", "profile_id"):
+        conn.execute("ALTER TABLE paycheck_profiles ADD COLUMN profile_id INTEGER NOT NULL DEFAULT 1 REFERENCES budget_profiles(id)")
+    conn.execute("UPDATE paycheck_profiles SET profile_id = ? WHERE profile_id IS NULL OR profile_id = 1", (profile_id,))
 
 
 @app.on_event("startup")
@@ -212,17 +319,38 @@ def get_chunk_or_404(conn: sqlite3.Connection, chunk_id: int) -> sqlite3.Row:
     return chunk
 
 
-def account_summaries(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+def get_profile_or_404(conn: sqlite3.Connection, profile_id: int) -> sqlite3.Row:
+    profile = conn.execute("SELECT * FROM budget_profiles WHERE id = ?", (profile_id,)).fetchone()
+    if not profile:
+        raise HTTPException(status_code=404, detail="Budget profile not found")
+    return profile
+
+
+def require_profile_admin(conn: sqlite3.Connection, profile_id: int, user_id: int) -> None:
+    access = conn.execute(
+        """
+        SELECT * FROM user_profile_access
+        WHERE profile_id = ? AND user_id = ? AND role = 'admin'
+        """,
+        (profile_id, user_id),
+    ).fetchone()
+    if not access:
+        raise HTTPException(status_code=403, detail="Admin access is required for this budget profile")
+
+
+def account_summaries(conn: sqlite3.Connection, profile_id: int = 1) -> list[dict[str, Any]]:
     rows = conn.execute(
         """
         SELECT
             a.*,
             COALESCE(SUM(CASE WHEN c.is_active = 1 THEN c.balance ELSE 0 END), 0) AS allocated_balance
         FROM accounts a
-        LEFT JOIN budget_chunks c ON c.account_id = a.id
+        LEFT JOIN budget_chunks c ON c.account_id = a.id AND c.profile_id = a.profile_id
+        WHERE a.profile_id = ?
         GROUP BY a.id
         ORDER BY a.name
-        """
+        """,
+        (profile_id,),
     ).fetchall()
     summaries = []
     for row in rows:
@@ -233,8 +361,8 @@ def account_summaries(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     return summaries
 
 
-def account_summary(conn: sqlite3.Connection, account_id: int) -> dict[str, Any] | None:
-    return next((account for account in account_summaries(conn) if account["id"] == account_id), None)
+def account_summary(conn: sqlite3.Connection, account_id: int, profile_id: int = 1) -> dict[str, Any] | None:
+    return next((account for account in account_summaries(conn, profile_id) if account["id"] == account_id), None)
 
 
 @app.get("/api/health")
@@ -242,27 +370,181 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.get("/api/dashboard/summary")
-def dashboard_summary() -> dict[str, Any]:
+@app.get("/api/users")
+def list_users() -> list[dict[str, Any]]:
     with db() as conn:
-        accounts = account_summaries(conn)
+        return rows_to_dicts(conn.execute("SELECT * FROM users ORDER BY email").fetchall())
+
+
+@app.post("/api/users")
+def create_user(payload: UserIn) -> dict[str, Any]:
+    stamp = now()
+    with db() as conn:
+        existing = conn.execute("SELECT * FROM users WHERE lower(email) = lower(?)", (payload.email,)).fetchone()
+        if existing:
+            return dict(existing)
+        cursor = conn.execute(
+            "INSERT INTO users (email, display_name, created_at) VALUES (?, ?, ?)",
+            (payload.email, payload.display_name, stamp),
+        )
+        return row_to_dict(conn.execute("SELECT * FROM users WHERE id = ?", (cursor.lastrowid,)).fetchone())
+
+
+@app.get("/api/budget-profiles")
+def list_budget_profiles(user_id: int | None = None) -> list[dict[str, Any]]:
+    with db() as conn:
+        if user_id is None:
+            return rows_to_dicts(conn.execute("SELECT * FROM budget_profiles ORDER BY name").fetchall())
+        return rows_to_dicts(
+            conn.execute(
+                """
+                SELECT p.*, a.role
+                FROM budget_profiles p
+                JOIN user_profile_access a ON a.profile_id = p.id
+                WHERE a.user_id = ?
+                ORDER BY p.name
+                """,
+                (user_id,),
+            ).fetchall()
+        )
+
+
+@app.post("/api/budget-profiles")
+def create_budget_profile(payload: BudgetProfileIn) -> dict[str, Any]:
+    stamp = now()
+    with db() as conn:
+        user = conn.execute("SELECT * FROM users WHERE id = ?", (payload.owner_user_id,)).fetchone()
+        if not user:
+            raise HTTPException(status_code=404, detail="Owner user not found")
+        cursor = conn.execute(
+            """
+            INSERT INTO budget_profiles (name, owner_user_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (payload.name, payload.owner_user_id, stamp, stamp),
+        )
+        profile_id = cursor.lastrowid
+        conn.execute(
+            """
+            INSERT INTO user_profile_access (user_id, profile_id, role, created_at)
+            VALUES (?, ?, 'admin', ?)
+            """,
+            (payload.owner_user_id, profile_id, stamp),
+        )
+        return row_to_dict(conn.execute("SELECT * FROM budget_profiles WHERE id = ?", (profile_id,)).fetchone())
+
+
+@app.get("/api/budget-profiles/{profile_id}/members")
+def list_budget_profile_members(profile_id: int) -> list[dict[str, Any]]:
+    with db() as conn:
+        get_profile_or_404(conn, profile_id)
+        return rows_to_dicts(
+            conn.execute(
+                """
+                SELECT u.id AS user_id, u.email, u.display_name, a.role, a.created_at
+                FROM user_profile_access a
+                JOIN users u ON u.id = a.user_id
+                WHERE a.profile_id = ?
+                ORDER BY u.email
+                """,
+                (profile_id,),
+            ).fetchall()
+        )
+
+
+@app.post("/api/budget-profiles/{profile_id}/invitations")
+def invite_budget_profile_member(profile_id: int, payload: InvitationIn) -> dict[str, Any]:
+    stamp = now()
+    with db() as conn:
+        get_profile_or_404(conn, profile_id)
+        require_profile_admin(conn, profile_id, payload.invited_by_user_id)
+        cursor = conn.execute(
+            """
+            INSERT INTO profile_invitations
+                (profile_id, email, role, invited_by_user_id, status, created_at)
+            VALUES (?, ?, ?, ?, 'pending', ?)
+            """,
+            (profile_id, payload.email, payload.role, payload.invited_by_user_id, stamp),
+        )
+        return row_to_dict(conn.execute("SELECT * FROM profile_invitations WHERE id = ?", (cursor.lastrowid,)).fetchone())
+
+
+@app.get("/api/invitations")
+def list_invitations(email: str | None = None, profile_id: int | None = None) -> list[dict[str, Any]]:
+    with db() as conn:
+        clauses = []
+        params: list[Any] = []
+        if email is not None:
+            clauses.append("lower(email) = lower(?)")
+            params.append(email)
+        if profile_id is not None:
+            clauses.append("profile_id = ?")
+            params.append(profile_id)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        return rows_to_dicts(
+            conn.execute(f"SELECT * FROM profile_invitations{where} ORDER BY created_at DESC", params).fetchall()
+        )
+
+
+@app.post("/api/invitations/{invitation_id}/accept")
+def accept_invitation(invitation_id: int, payload: AcceptInvitationIn) -> dict[str, Any]:
+    stamp = now()
+    with db() as conn:
+        invitation = conn.execute("SELECT * FROM profile_invitations WHERE id = ?", (invitation_id,)).fetchone()
+        if not invitation:
+            raise HTTPException(status_code=404, detail="Invitation not found")
+        if invitation["status"] != "pending":
+            raise HTTPException(status_code=400, detail="Invitation is not pending")
+        user = conn.execute("SELECT * FROM users WHERE id = ?", (payload.user_id,)).fetchone()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        if user["email"].lower() != invitation["email"].lower():
+            raise HTTPException(status_code=400, detail="Invitation email does not match this user")
+        conn.execute(
+            """
+            INSERT INTO user_profile_access (user_id, profile_id, role, created_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(user_id, profile_id) DO UPDATE SET role = excluded.role
+            """,
+            (payload.user_id, invitation["profile_id"], invitation["role"], stamp),
+        )
+        conn.execute(
+            """
+            UPDATE profile_invitations
+            SET status = 'accepted', accepted_by_user_id = ?, accepted_at = ?
+            WHERE id = ?
+            """,
+            (payload.user_id, stamp, invitation_id),
+        )
+        return row_to_dict(conn.execute("SELECT * FROM profile_invitations WHERE id = ?", (invitation_id,)).fetchone())
+
+
+@app.get("/api/dashboard/summary")
+def dashboard_summary(profile_id: int = 1) -> dict[str, Any]:
+    with db() as conn:
+        get_profile_or_404(conn, profile_id)
+        accounts = account_summaries(conn, profile_id)
         chunks = rows_to_dicts(
             conn.execute(
                 """
                 SELECT c.*, a.name AS account_name
                 FROM budget_chunks c
                 JOIN accounts a ON a.id = c.account_id
+                WHERE c.profile_id = ?
                 ORDER BY c.name
-                """
+                """,
+                (profile_id,),
             ).fetchall()
         )
         for chunk in chunks:
             chunk["is_active"] = bool(chunk["is_active"])
         movements = rows_to_dicts(
-            conn.execute("SELECT * FROM money_movements ORDER BY created_at DESC LIMIT 8").fetchall()
+            conn.execute(
+                "SELECT * FROM money_movements WHERE profile_id = ? ORDER BY created_at DESC LIMIT 8", (profile_id,)
+            ).fetchall()
         )
         paychecks = rows_to_dicts(
-            conn.execute("SELECT * FROM paychecks ORDER BY created_at DESC LIMIT 5").fetchall()
+            conn.execute("SELECT * FROM paychecks WHERE profile_id = ? ORDER BY created_at DESC LIMIT 5", (profile_id,)).fetchall()
         )
         return {
             "totals": {
@@ -275,35 +557,39 @@ def dashboard_summary() -> dict[str, Any]:
             "recent_money_movements": movements,
             "recent_paychecks": paychecks,
             "paycheck_profile": row_to_dict(
-                conn.execute("SELECT * FROM paycheck_profiles WHERE id = 1").fetchone()
+                conn.execute("SELECT * FROM paycheck_profiles WHERE profile_id = ?", (profile_id,)).fetchone()
             ),
         }
 
 
 @app.get("/api/accounts")
-def list_accounts() -> list[dict[str, Any]]:
+def list_accounts(profile_id: int = 1) -> list[dict[str, Any]]:
     with db() as conn:
-        return account_summaries(conn)
+        get_profile_or_404(conn, profile_id)
+        return account_summaries(conn, profile_id)
 
 
 @app.post("/api/accounts")
-def create_account(payload: AccountIn) -> dict[str, Any]:
+def create_account(payload: AccountIn, profile_id: int = 1) -> dict[str, Any]:
     stamp = now()
     with db() as conn:
+        get_profile_or_404(conn, profile_id)
         cursor = conn.execute(
             """
-            INSERT INTO accounts (name, type, balance, is_active, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO accounts (profile_id, name, type, balance, is_active, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (payload.name, payload.type, payload.balance, int(payload.is_active), stamp, stamp),
+            (profile_id, payload.name, payload.type, payload.balance, int(payload.is_active), stamp, stamp),
         )
-        return next(a for a in account_summaries(conn) if a["id"] == cursor.lastrowid)
+        return next(a for a in account_summaries(conn, profile_id) if a["id"] == cursor.lastrowid)
 
 
 @app.put("/api/accounts/{account_id}")
-def update_account(account_id: int, payload: AccountIn) -> dict[str, Any]:
+def update_account(account_id: int, payload: AccountIn, profile_id: int = 1) -> dict[str, Any]:
     with db() as conn:
-        get_account_or_404(conn, account_id)
+        account = get_account_or_404(conn, account_id)
+        if account["profile_id"] != profile_id:
+            raise HTTPException(status_code=404, detail="Account not found")
         conn.execute(
             """
             UPDATE accounts
@@ -312,53 +598,72 @@ def update_account(account_id: int, payload: AccountIn) -> dict[str, Any]:
             """,
             (payload.name, payload.type, payload.balance, int(payload.is_active), now(), account_id),
         )
-        return next(a for a in account_summaries(conn) if a["id"] == account_id)
+        return next(a for a in account_summaries(conn, profile_id) if a["id"] == account_id)
 
 
 @app.get("/api/paycheck-profile")
-def get_paycheck_profile() -> dict[str, Any] | None:
+def get_paycheck_profile(profile_id: int = 1) -> dict[str, Any] | None:
     with db() as conn:
-        return row_to_dict(conn.execute("SELECT * FROM paycheck_profiles WHERE id = 1").fetchone())
+        get_profile_or_404(conn, profile_id)
+        return row_to_dict(conn.execute("SELECT * FROM paycheck_profiles WHERE profile_id = ?", (profile_id,)).fetchone())
 
 
 @app.post("/api/paycheck-profile")
 @app.put("/api/paycheck-profile")
-def upsert_paycheck_profile(payload: PaycheckProfileIn) -> dict[str, Any]:
+def upsert_paycheck_profile(payload: PaycheckProfileIn, profile_id: int = 1) -> dict[str, Any]:
     with db() as conn:
-        conn.execute(
-            """
-            INSERT INTO paycheck_profiles
-                (id, gross_pay_amount, net_pay_amount, net_pay_mode, pay_frequency, updated_at)
-            VALUES (1, ?, ?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET
-                gross_pay_amount = excluded.gross_pay_amount,
-                net_pay_amount = excluded.net_pay_amount,
-                net_pay_mode = excluded.net_pay_mode,
-                pay_frequency = excluded.pay_frequency,
-                updated_at = excluded.updated_at
-            """,
-            (
-                payload.gross_pay_amount,
-                payload.net_pay_amount,
-                payload.net_pay_mode,
-                payload.pay_frequency,
-                now(),
-            ),
-        )
-        return row_to_dict(conn.execute("SELECT * FROM paycheck_profiles WHERE id = 1").fetchone())
+        get_profile_or_404(conn, profile_id)
+        existing = conn.execute("SELECT * FROM paycheck_profiles WHERE profile_id = ?", (profile_id,)).fetchone()
+        if existing:
+            conn.execute(
+                """
+                UPDATE paycheck_profiles
+                SET gross_pay_amount = ?, net_pay_amount = ?, net_pay_mode = ?,
+                    pay_frequency = ?, updated_at = ?
+                WHERE profile_id = ?
+                """,
+                (
+                    payload.gross_pay_amount,
+                    payload.net_pay_amount,
+                    payload.net_pay_mode,
+                    payload.pay_frequency,
+                    now(),
+                    profile_id,
+                ),
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO paycheck_profiles
+                    (profile_id, gross_pay_amount, net_pay_amount, net_pay_mode, pay_frequency, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    profile_id,
+                    payload.gross_pay_amount,
+                    payload.net_pay_amount,
+                    payload.net_pay_mode,
+                    payload.pay_frequency,
+                    now(),
+                ),
+            )
+        return row_to_dict(conn.execute("SELECT * FROM paycheck_profiles WHERE profile_id = ?", (profile_id,)).fetchone())
 
 
 @app.get("/api/chunks")
-def list_chunks() -> list[dict[str, Any]]:
+def list_chunks(profile_id: int = 1) -> list[dict[str, Any]]:
     with db() as conn:
+        get_profile_or_404(conn, profile_id)
         chunks = rows_to_dicts(
             conn.execute(
                 """
                 SELECT c.*, a.name AS account_name
                 FROM budget_chunks c
                 JOIN accounts a ON a.id = c.account_id
+                WHERE c.profile_id = ?
                 ORDER BY c.name
-                """
+                """,
+                (profile_id,),
             ).fetchall()
         )
         for chunk in chunks:
@@ -367,17 +672,21 @@ def list_chunks() -> list[dict[str, Any]]:
 
 
 @app.post("/api/chunks")
-def create_chunk(payload: ChunkIn) -> dict[str, Any]:
+def create_chunk(payload: ChunkIn, profile_id: int = 1) -> dict[str, Any]:
     stamp = now()
     with db() as conn:
-        get_account_or_404(conn, payload.account_id)
+        get_profile_or_404(conn, profile_id)
+        account = get_account_or_404(conn, payload.account_id)
+        if account["profile_id"] != profile_id:
+            raise HTTPException(status_code=400, detail="Chunk account must belong to the selected budget profile")
         cursor = conn.execute(
             """
             INSERT INTO budget_chunks
-                (name, account_id, amount_per_paycheck, balance, is_active, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (profile_id, name, account_id, amount_per_paycheck, balance, is_active, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
+                profile_id,
                 payload.name,
                 payload.account_id,
                 payload.amount_per_paycheck,
@@ -392,9 +701,9 @@ def create_chunk(payload: ChunkIn) -> dict[str, Any]:
             SELECT c.*, a.name AS account_name
             FROM budget_chunks c
             JOIN accounts a ON a.id = c.account_id
-            WHERE c.id = ?
+            WHERE c.id = ? AND c.profile_id = ?
             """,
-            (cursor.lastrowid,),
+            (cursor.lastrowid, profile_id),
         ).fetchone()
         result = dict(chunk)
         result["is_active"] = bool(result["is_active"])
@@ -402,10 +711,12 @@ def create_chunk(payload: ChunkIn) -> dict[str, Any]:
 
 
 @app.put("/api/chunks/{chunk_id}")
-def update_chunk(chunk_id: int, payload: ChunkIn) -> dict[str, Any]:
+def update_chunk(chunk_id: int, payload: ChunkIn, profile_id: int = 1) -> dict[str, Any]:
     with db() as conn:
-        get_chunk_or_404(conn, chunk_id)
-        get_account_or_404(conn, payload.account_id)
+        chunk = get_chunk_or_404(conn, chunk_id)
+        account = get_account_or_404(conn, payload.account_id)
+        if chunk["profile_id"] != profile_id or account["profile_id"] != profile_id:
+            raise HTTPException(status_code=404, detail="Chunk not found")
         conn.execute(
             """
             UPDATE budget_chunks
@@ -428,9 +739,9 @@ def update_chunk(chunk_id: int, payload: ChunkIn) -> dict[str, Any]:
             SELECT c.*, a.name AS account_name
             FROM budget_chunks c
             JOIN accounts a ON a.id = c.account_id
-            WHERE c.id = ?
+            WHERE c.id = ? AND c.profile_id = ?
             """,
-            (chunk_id,),
+            (chunk_id, profile_id),
         ).fetchone()
         result = dict(chunk)
         result["is_active"] = bool(result["is_active"])
@@ -438,26 +749,33 @@ def update_chunk(chunk_id: int, payload: ChunkIn) -> dict[str, Any]:
 
 
 @app.delete("/api/chunks/{chunk_id}")
-def delete_chunk(chunk_id: int) -> dict[str, bool]:
+def delete_chunk(chunk_id: int, profile_id: int = 1) -> dict[str, bool]:
     with db() as conn:
-        get_chunk_or_404(conn, chunk_id)
+        chunk = get_chunk_or_404(conn, chunk_id)
+        if chunk["profile_id"] != profile_id:
+            raise HTTPException(status_code=404, detail="Chunk not found")
         conn.execute("DELETE FROM budget_chunks WHERE id = ?", (chunk_id,))
         return {"deleted": True}
 
 
 @app.post("/api/paychecks/add")
-def add_paycheck(payload: AddPaycheckIn) -> dict[str, Any]:
+def add_paycheck(payload: AddPaycheckIn, profile_id: int = 1) -> dict[str, Any]:
     with db() as conn:
-        profile = conn.execute("SELECT * FROM paycheck_profiles WHERE id = 1").fetchone()
+        get_profile_or_404(conn, profile_id)
+        profile = conn.execute("SELECT * FROM paycheck_profiles WHERE profile_id = ?", (profile_id,)).fetchone()
         if not profile:
             raise HTTPException(status_code=400, detail="Create a paycheck profile first")
         account_id = payload.account_id
         if account_id is None:
-            account = conn.execute("SELECT * FROM accounts WHERE is_active = 1 ORDER BY id LIMIT 1").fetchone()
+            account = conn.execute(
+                "SELECT * FROM accounts WHERE profile_id = ? AND is_active = 1 ORDER BY id LIMIT 1", (profile_id,)
+            ).fetchone()
             if not account:
                 raise HTTPException(status_code=400, detail="Create an account first")
             account_id = account["id"]
-        get_account_or_404(conn, account_id)
+        account = get_account_or_404(conn, account_id)
+        if account["profile_id"] != profile_id:
+            raise HTTPException(status_code=404, detail="Account not found")
         net_amount = profile["net_pay_amount"] if payload.amount_mode == "expected" else payload.custom_amount
         if net_amount is None:
             raise HTTPException(status_code=400, detail="Custom amount is required")
@@ -465,16 +783,17 @@ def add_paycheck(payload: AddPaycheckIn) -> dict[str, Any]:
         stamp = now()
         cursor = conn.execute(
             """
-            INSERT INTO paychecks (account_id, gross_amount, net_amount, amount_mode, created_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO paychecks (profile_id, account_id, gross_amount, net_amount, amount_mode, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (account_id, profile["gross_pay_amount"], net_amount, payload.amount_mode, stamp),
+            (profile_id, account_id, profile["gross_pay_amount"], net_amount, payload.amount_mode, stamp),
         )
         paycheck_id = cursor.lastrowid
         conn.execute("UPDATE accounts SET balance = balance + ?, updated_at = ? WHERE id = ?", (net_amount, stamp, account_id))
 
         chunks = conn.execute(
-            "SELECT * FROM budget_chunks WHERE account_id = ? AND is_active = 1 ORDER BY id", (account_id,)
+            "SELECT * FROM budget_chunks WHERE profile_id = ? AND account_id = ? AND is_active = 1 ORDER BY id",
+            (profile_id, account_id),
         ).fetchall()
         remaining = float(net_amount)
         allocations = []
@@ -498,14 +817,18 @@ def add_paycheck(payload: AddPaycheckIn) -> dict[str, Any]:
 
 
 @app.get("/api/paychecks")
-def list_paychecks() -> list[dict[str, Any]]:
+def list_paychecks(profile_id: int = 1) -> list[dict[str, Any]]:
     with db() as conn:
-        return rows_to_dicts(conn.execute("SELECT * FROM paychecks ORDER BY created_at DESC").fetchall())
+        get_profile_or_404(conn, profile_id)
+        return rows_to_dicts(
+            conn.execute("SELECT * FROM paychecks WHERE profile_id = ? ORDER BY created_at DESC", (profile_id,)).fetchall()
+        )
 
 
 @app.post("/api/money-movements")
-def create_money_movement(payload: MoneyMovementIn) -> dict[str, Any]:
+def create_money_movement(payload: MoneyMovementIn, profile_id: int = 1) -> dict[str, Any]:
     with db() as conn:
+        get_profile_or_404(conn, profile_id)
         stamp = now()
         source_account_id: int | None = None
         destination_id = payload.destination_id
@@ -520,6 +843,8 @@ def create_money_movement(payload: MoneyMovementIn) -> dict[str, Any]:
             if payload.source_id is None:
                 raise HTTPException(status_code=400, detail="source_id is required for chunk transfers")
             source_chunk = get_chunk_or_404(conn, payload.source_id)
+            if source_chunk["profile_id"] != profile_id:
+                raise HTTPException(status_code=404, detail="Chunk not found")
             source_account_id = source_chunk["account_id"]
             if source_chunk["balance"] < payload.amount:
                 raise HTTPException(status_code=400, detail="Chunk does not have enough allocated money")
@@ -531,7 +856,7 @@ def create_money_movement(payload: MoneyMovementIn) -> dict[str, Any]:
             if payload.source_id is None:
                 raise HTTPException(status_code=400, detail="source_id must be the source account for unallocated transfers")
             source_account_id = payload.source_id
-            source = account_summary(conn, payload.source_id)
+            source = account_summary(conn, payload.source_id, profile_id)
             if not source:
                 raise HTTPException(status_code=404, detail="Source account not found")
             if source["unallocated_balance"] < payload.amount:
@@ -541,6 +866,8 @@ def create_money_movement(payload: MoneyMovementIn) -> dict[str, Any]:
             if payload.destination_id is None:
                 raise HTTPException(status_code=400, detail="destination_id is required for chunk transfers")
             destination_chunk = get_chunk_or_404(conn, payload.destination_id)
+            if destination_chunk["profile_id"] != profile_id:
+                raise HTTPException(status_code=404, detail="Chunk not found")
             destination_account_id = destination_chunk["account_id"]
             if payload.source_type == "unallocated" and source_account_id != destination_account_id:
                 raise HTTPException(
@@ -548,7 +875,7 @@ def create_money_movement(payload: MoneyMovementIn) -> dict[str, Any]:
                     detail="Unallocated money can only be assigned to chunks in the same account",
                 )
             if payload.source_type == "chunk" and source_account_id != destination_account_id:
-                destination = account_summary(conn, destination_account_id)
+                destination = account_summary(conn, destination_account_id, profile_id)
                 if not destination or destination["unallocated_balance"] < payload.amount:
                     raise HTTPException(
                         status_code=400,
@@ -561,9 +888,11 @@ def create_money_movement(payload: MoneyMovementIn) -> dict[str, Any]:
         elif payload.destination_type == "account":
             if payload.destination_id is None:
                 raise HTTPException(status_code=400, detail="destination_id is required to log an account destination")
-            get_account_or_404(conn, payload.destination_id)
+            destination_account = get_account_or_404(conn, payload.destination_id)
+            if destination_account["profile_id"] != profile_id:
+                raise HTTPException(status_code=404, detail="Destination account not found")
             if source_account_id != payload.destination_id:
-                destination = account_summary(conn, payload.destination_id)
+                destination = account_summary(conn, payload.destination_id, profile_id)
                 if not destination or destination["unallocated_balance"] < payload.amount:
                     raise HTTPException(
                         status_code=400,
@@ -592,10 +921,11 @@ def create_money_movement(payload: MoneyMovementIn) -> dict[str, Any]:
         cursor = conn.execute(
             """
             INSERT INTO money_movements
-                (source_type, source_id, destination_type, destination_id, amount, note, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (profile_id, source_type, source_id, destination_type, destination_id, amount, note, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
+                profile_id,
                 payload.source_type,
                 payload.source_id,
                 payload.destination_type,
@@ -609,35 +939,46 @@ def create_money_movement(payload: MoneyMovementIn) -> dict[str, Any]:
 
 
 @app.get("/api/money-movements")
-def list_money_movements() -> list[dict[str, Any]]:
+def list_money_movements(profile_id: int = 1) -> list[dict[str, Any]]:
     with db() as conn:
-        return rows_to_dicts(conn.execute("SELECT * FROM money_movements ORDER BY created_at DESC").fetchall())
+        get_profile_or_404(conn, profile_id)
+        return rows_to_dicts(
+            conn.execute("SELECT * FROM money_movements WHERE profile_id = ? ORDER BY created_at DESC", (profile_id,)).fetchall()
+        )
 
 
 @app.get("/api/transactions")
-def list_transactions() -> list[dict[str, Any]]:
+def list_transactions(profile_id: int = 1) -> list[dict[str, Any]]:
     with db() as conn:
-        return rows_to_dicts(conn.execute("SELECT * FROM transactions ORDER BY created_at DESC").fetchall())
+        get_profile_or_404(conn, profile_id)
+        return rows_to_dicts(
+            conn.execute("SELECT * FROM transactions WHERE profile_id = ? ORDER BY created_at DESC", (profile_id,)).fetchall()
+        )
 
 
 @app.post("/api/transactions")
-def create_transaction(payload: TransactionIn) -> dict[str, Any]:
+def create_transaction(payload: TransactionIn, profile_id: int = 1) -> dict[str, Any]:
     with db() as conn:
-        get_account_or_404(conn, payload.account_id)
+        get_profile_or_404(conn, profile_id)
+        account = get_account_or_404(conn, payload.account_id)
+        if account["profile_id"] != profile_id:
+            raise HTTPException(status_code=404, detail="Account not found")
+        stamp = now()
         cursor = conn.execute(
             """
             INSERT INTO transactions
-                (account_id, amount, description, allocation_type, allocation_id, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+                (profile_id, account_id, amount, description, allocation_type, allocation_id, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
+                profile_id,
                 payload.account_id,
                 payload.amount,
                 payload.description,
                 payload.allocation_type,
                 payload.allocation_id,
-                now(),
+                stamp,
             ),
         )
-        conn.execute("UPDATE accounts SET balance = balance + ?, updated_at = ? WHERE id = ?", (payload.amount, now(), payload.account_id))
+        conn.execute("UPDATE accounts SET balance = balance + ?, updated_at = ? WHERE id = ?", (payload.amount, stamp, payload.account_id))
         return row_to_dict(conn.execute("SELECT * FROM transactions WHERE id = ?", (cursor.lastrowid,)).fetchone())

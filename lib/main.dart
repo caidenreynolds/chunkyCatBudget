@@ -317,7 +317,7 @@ class _ScreenHost extends StatelessWidget {
       5 => TransfersScreen(data: data, api: api, refresh: refresh),
       6 => TransactionsScreen(data: data, api: api, refresh: refresh),
       8 => MobileMoreScreen(goTo: goTo),
-      _ => const SettingsScreen(),
+      _ => SettingsScreen(api: api),
     };
   }
 }
@@ -836,16 +836,205 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
   }
 }
 
-class SettingsScreen extends StatelessWidget {
-  const SettingsScreen({super.key});
+class SettingsScreen extends StatefulWidget {
+  const SettingsScreen({super.key, required this.api});
+  final BudgetApi api;
+
+  @override
+  State<SettingsScreen> createState() => _SettingsScreenState();
+}
+
+class _SettingsScreenState extends State<SettingsScreen> {
+  late Future<Map<String, List<Map<String, dynamic>>>> data = _load();
+  final userEmail = TextEditingController();
+  final userName = TextEditingController();
+  final profileName = TextEditingController();
+  final inviteEmail = TextEditingController();
+  int? ownerUserId;
+  int? inviteProfileId;
+  int? inviterUserId;
+  var inviteRole = 'read_only';
+  var saving = false;
+
+  Future<Map<String, List<Map<String, dynamic>>>> _load() async {
+    final users = listOfMaps(await widget.api.get('/api/users'));
+    final profiles = listOfMaps(await widget.api.get('/api/budget-profiles'));
+    final invitations = listOfMaps(await widget.api.get('/api/invitations'));
+    return {'users': users, 'profiles': profiles, 'invitations': invitations};
+  }
+
+  void reload() {
+    setState(() => data = _load());
+  }
 
   @override
   Widget build(BuildContext context) {
-    return const _Page(
+    final isPhone = MediaQuery.sizeOf(context).width < 600;
+    return _Page(
       title: 'Settings',
+      child: FutureBuilder<Map<String, List<Map<String, dynamic>>>>(
+        future: data,
+        builder: (context, snapshot) {
+          final users = snapshot.data?['users'] ?? [];
+          final profiles = snapshot.data?['profiles'] ?? [];
+          final invitations = snapshot.data?['invitations'] ?? [];
+          ownerUserId ??= users.isNotEmpty ? users.first['id'] as int : null;
+          inviterUserId ??= users.isNotEmpty ? users.first['id'] as int : null;
+          inviteProfileId ??= profiles.isNotEmpty ? profiles.first['id'] as int : null;
+
+          return ListView(
+            padding: EdgeInsets.all(isPhone ? 14 : 20),
+            children: [
+              const _Notice('Users can belong to zero or more budget profiles. The user who creates a profile is its admin.'),
+              const SizedBox(height: 14),
+              _SectionTitle('Create User'),
+              _SettingsCard(
+                children: [
+                  TextField(controller: userEmail, decoration: const InputDecoration(labelText: 'Email')),
+                  TextField(controller: userName, decoration: const InputDecoration(labelText: 'Display name')),
+                  _SubmitButton(saving: saving, label: 'Create User', onPressed: _createUser),
+                ],
+              ),
+              const SizedBox(height: 18),
+              _SectionTitle('Create Budget Profile'),
+              _SettingsCard(
+                children: [
+                  TextField(controller: profileName, decoration: const InputDecoration(labelText: 'Profile name')),
+                  _DropdownField<int>(
+                    label: 'Admin user',
+                    value: ownerUserId,
+                    values: users.map((u) => u['id'] as int).toList(),
+                    labelFor: (id) => users.firstWhere((u) => u['id'] == id)['email'].toString(),
+                    onChanged: (v) => setState(() => ownerUserId = v),
+                  ),
+                  _SubmitButton(saving: saving, label: 'Create Profile', onPressed: ownerUserId == null ? null : _createProfile),
+                ],
+              ),
+              const SizedBox(height: 18),
+              _SectionTitle('Invite User'),
+              _SettingsCard(
+                children: [
+                  TextField(controller: inviteEmail, decoration: const InputDecoration(labelText: 'Invite email')),
+                  _DropdownField<int>(
+                    label: 'Budget profile',
+                    value: inviteProfileId,
+                    values: profiles.map((p) => p['id'] as int).toList(),
+                    labelFor: (id) => profiles.firstWhere((p) => p['id'] == id)['name'].toString(),
+                    onChanged: (v) => setState(() => inviteProfileId = v),
+                  ),
+                  _DropdownField<int>(
+                    label: 'Inviting admin',
+                    value: inviterUserId,
+                    values: users.map((u) => u['id'] as int).toList(),
+                    labelFor: (id) => users.firstWhere((u) => u['id'] == id)['email'].toString(),
+                    onChanged: (v) => setState(() => inviterUserId = v),
+                  ),
+                  _DropdownField(
+                    label: 'Role',
+                    value: inviteRole,
+                    values: const ['admin', 'read_only'],
+                    labelFor: (role) => role == 'admin' ? 'Admin' : 'Read only',
+                    onChanged: (v) => setState(() => inviteRole = v ?? inviteRole),
+                  ),
+                  _SubmitButton(
+                    saving: saving,
+                    label: 'Create Invitation',
+                    onPressed: inviteProfileId == null || inviterUserId == null ? null : _invite,
+                  ),
+                ],
+              ),
+              const SizedBox(height: 18),
+              _SectionTitle('Users'),
+              _DataCard(
+                emptyText: snapshot.connectionState == ConnectionState.waiting ? 'Loading users' : 'No users yet',
+                children: users.map((u) => _ListRow(title: u['email'].toString(), subtitle: u['display_name'].toString(), trailing: '#${u['id']}')).toList(),
+              ),
+              const SizedBox(height: 18),
+              _SectionTitle('Budget Profiles'),
+              _DataCard(
+                emptyText: 'No budget profiles yet',
+                children: profiles.map((p) => _ListRow(title: p['name'].toString(), subtitle: 'Owner user #${p['owner_user_id']}', trailing: '#${p['id']}')).toList(),
+              ),
+              const SizedBox(height: 18),
+              _SectionTitle('Invitations'),
+              _DataCard(
+                emptyText: 'No invitations yet',
+                children: invitations.map((i) => _ListRow(title: i['email'].toString(), subtitle: '${i['role']}  |  ${i['status']}', trailing: '#${i['id']}')).toList(),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  Future<void> _createUser() async {
+    setState(() => saving = true);
+    try {
+      await widget.api.post('/api/users', {'email': userEmail.text, 'display_name': userName.text});
+      userEmail.clear();
+      userName.clear();
+      reload();
+      if (!mounted) return;
+      toast(context, 'User saved');
+    } catch (error) {
+      if (!mounted) return;
+      toast(context, error.toString());
+    } finally {
+      if (mounted) setState(() => saving = false);
+    }
+  }
+
+  Future<void> _createProfile() async {
+    setState(() => saving = true);
+    try {
+      await widget.api.post('/api/budget-profiles', {'name': profileName.text, 'owner_user_id': ownerUserId});
+      profileName.clear();
+      reload();
+      if (!mounted) return;
+      toast(context, 'Budget profile created');
+    } catch (error) {
+      if (!mounted) return;
+      toast(context, error.toString());
+    } finally {
+      if (mounted) setState(() => saving = false);
+    }
+  }
+
+  Future<void> _invite() async {
+    setState(() => saving = true);
+    try {
+      await widget.api.post('/api/budget-profiles/$inviteProfileId/invitations', {
+        'email': inviteEmail.text,
+        'role': inviteRole,
+        'invited_by_user_id': inviterUserId,
+      });
+      inviteEmail.clear();
+      reload();
+      if (!mounted) return;
+      toast(context, 'Invitation created');
+    } catch (error) {
+      if (!mounted) return;
+      toast(context, error.toString());
+    } finally {
+      if (mounted) setState(() => saving = false);
+    }
+  }
+}
+
+class _SettingsCard extends StatelessWidget {
+  const _SettingsCard({required this.children});
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
       child: Padding(
-        padding: EdgeInsets.all(20),
-        child: _Notice('Bank connections are reserved for the future flow. API base URL: $apiBaseUrl'),
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: children.map((child) => Padding(padding: const EdgeInsets.only(bottom: 12), child: child)).toList(),
+        ),
       ),
     );
   }
