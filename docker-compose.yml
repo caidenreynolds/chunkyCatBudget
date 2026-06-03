@@ -1,0 +1,15 @@
+services:
+  chunky-cat-budget:
+    build: .
+    container_name: chunky-cat-budget
+    environment:
+      DATABASE_URL: sqlite:////data/budget.db
+      CORS_ORIGINS: "*"
+    ports:
+      - "8080:80"
+    volumes:
+      - chunky-cat-budget-data:/data
+    restart: unless-stopped
+
+volumes:
+  chunky-cat-budget-data:

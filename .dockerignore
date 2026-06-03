@@ -1,0 +1,17 @@
+.dart_tool/
+.git/
+.idea/
+.venv/
+__pycache__/
+backend/data/
+build/
+coverage/
+docs/
+linux/
+macos/
+windows/
+ios/
+android/
+*.iml
+*.pyc
+.DS_Store
