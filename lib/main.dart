@@ -259,7 +259,7 @@ class LoginScreen extends StatefulWidget {
 
 class _LoginScreenState extends State<LoginScreen> {
   final email = TextEditingController();
-  final displayName = TextEditingController();
+  final password = TextEditingController();
   var signingIn = false;
 
   @override
@@ -290,9 +290,10 @@ class _LoginScreenState extends State<LoginScreen> {
                       ),
                       const SizedBox(height: 12),
                       TextField(
-                        controller: displayName,
-                        autofillHints: const [AutofillHints.name],
-                        decoration: const InputDecoration(labelText: 'Display name'),
+                        controller: password,
+                        obscureText: true,
+                        autofillHints: const [AutofillHints.password],
+                        decoration: const InputDecoration(labelText: 'Password'),
                       ),
                       const SizedBox(height: 18),
                       SizedBox(
@@ -317,9 +318,9 @@ class _LoginScreenState extends State<LoginScreen> {
   Future<void> _signIn() async {
     setState(() => signingIn = true);
     try {
-      final user = Map<String, dynamic>.from(await widget.api.post('/api/users', {
+      final user = Map<String, dynamic>.from(await widget.api.post('/api/login', {
         'email': email.text.trim(),
-        'display_name': displayName.text.trim(),
+        'password': password.text,
       }));
       widget.onSignedIn(user);
     } catch (error) {
@@ -937,6 +938,10 @@ class AccountsScreen extends StatelessWidget {
       child: ListView(
         padding: EdgeInsets.all(isPhone ? 14 : 20),
         children: [
+          if (canEdit) ...[
+            _AccountCreateCard(api: api, refresh: refresh),
+            const SizedBox(height: 18),
+          ],
           _DataCard(
             emptyText: 'Create a real-world account to hold paycheck money',
             children: accounts.map((a) {
@@ -950,6 +955,67 @@ class AccountsScreen extends StatelessWidget {
         ],
       ),
     );
+  }
+}
+
+class _AccountCreateCard extends StatefulWidget {
+  const _AccountCreateCard({required this.api, required this.refresh});
+  final BudgetApi api;
+  final VoidCallback refresh;
+
+  @override
+  State<_AccountCreateCard> createState() => _AccountCreateCardState();
+}
+
+class _AccountCreateCardState extends State<_AccountCreateCard> {
+  final name = TextEditingController();
+  final balance = TextEditingController(text: '0');
+  var type = 'checking';
+  var saving = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text('Create Account', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
+            const SizedBox(height: 12),
+            TextField(controller: name, decoration: const InputDecoration(labelText: 'Account name')),
+            const SizedBox(height: 12),
+            _DropdownField(label: 'Type', value: type, values: const ['checking', 'savings', 'cash', 'other'], onChanged: (v) => setState(() => type = v ?? type)),
+            const SizedBox(height: 12),
+            _MoneyField(label: 'Starting balance', controller: balance),
+            const SizedBox(height: 12),
+            _SubmitButton(saving: saving, label: 'Add Account', onPressed: _save),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _save() async {
+    setState(() => saving = true);
+    try {
+      await widget.api.post('/api/accounts', {
+        'name': name.text,
+        'type': type,
+        'balance': parseMoney(balance.text),
+        'is_active': true,
+      });
+      name.clear();
+      balance.text = '0';
+      widget.refresh();
+      if (!mounted) return;
+      toast(context, 'Account created');
+    } catch (error) {
+      if (!mounted) return;
+      toast(context, error.toString());
+    } finally {
+      if (mounted) setState(() => saving = false);
+    }
   }
 }
 
@@ -1238,6 +1304,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late Future<Map<String, List<Map<String, dynamic>>>> data = _load();
   final userEmail = TextEditingController();
   final userName = TextEditingController();
+  final userPassword = TextEditingController();
   final inviteEmail = TextEditingController();
   int? inviterUserId;
   var inviteRole = 'read_only';
@@ -1278,6 +1345,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   children: [
                     TextField(controller: userEmail, decoration: const InputDecoration(labelText: 'Email')),
                     TextField(controller: userName, decoration: const InputDecoration(labelText: 'Display name')),
+                    TextField(controller: userPassword, obscureText: true, decoration: const InputDecoration(labelText: 'Password')),
                     _SubmitButton(saving: saving, label: 'Create User', onPressed: _createUser),
                   ],
                 ),
@@ -1330,9 +1398,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _createUser() async {
     setState(() => saving = true);
     try {
-      await widget.api.post('/api/users', {'email': userEmail.text, 'display_name': userName.text});
+      await widget.api.post('/api/users', {'email': userEmail.text, 'display_name': userName.text, 'password': userPassword.text});
       userEmail.clear();
       userName.clear();
+      userPassword.clear();
       reload();
       if (!mounted) return;
       toast(context, 'User saved');

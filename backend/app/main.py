@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import hashlib
+import hmac
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -41,6 +43,17 @@ def now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def hash_password(password: str, salt_hex: str | None = None) -> tuple[str, str]:
+    salt = bytes.fromhex(salt_hex) if salt_hex else os.urandom(16)
+    password_hash = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 210_000)
+    return salt.hex(), password_hash.hex()
+
+
+def verify_password(password: str, salt_hex: str, hash_hex: str) -> bool:
+    _, candidate_hash = hash_password(password, salt_hex)
+    return hmac.compare_digest(candidate_hash, hash_hex)
+
+
 def row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
     return dict(row) if row else None
 
@@ -59,6 +72,12 @@ class AccountIn(BaseModel):
 class UserIn(BaseModel):
     email: str = Field(min_length=3)
     display_name: str = Field(default="", max_length=120)
+    password: str | None = Field(default=None, min_length=8)
+
+
+class LoginIn(BaseModel):
+    email: str = Field(min_length=3)
+    password: str = Field(min_length=8)
 
 
 class BudgetProfileIn(BaseModel):
@@ -132,6 +151,8 @@ def init_db() -> None:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 email TEXT NOT NULL UNIQUE,
                 display_name TEXT NOT NULL DEFAULT '',
+                password_salt TEXT,
+                password_hash TEXT,
                 created_at TEXT NOT NULL
             );
 
@@ -259,6 +280,10 @@ def migrate_db(conn: sqlite3.Connection) -> None:
     stamp = now()
     if not column_exists(conn, "users", "display_name"):
         conn.execute("ALTER TABLE users ADD COLUMN display_name TEXT NOT NULL DEFAULT ''")
+    if not column_exists(conn, "users", "password_salt"):
+        conn.execute("ALTER TABLE users ADD COLUMN password_salt TEXT")
+    if not column_exists(conn, "users", "password_hash"):
+        conn.execute("ALTER TABLE users ADD COLUMN password_hash TEXT")
 
     existing_user = conn.execute("SELECT * FROM users ORDER BY id LIMIT 1").fetchone()
     if existing_user is None:
@@ -373,7 +398,7 @@ def health() -> dict[str, str]:
 @app.get("/api/users")
 def list_users() -> list[dict[str, Any]]:
     with db() as conn:
-        return rows_to_dicts(conn.execute("SELECT * FROM users ORDER BY email").fetchall())
+        return rows_to_dicts(conn.execute("SELECT id, email, display_name, created_at FROM users ORDER BY email").fetchall())
 
 
 @app.post("/api/users")
@@ -382,12 +407,52 @@ def create_user(payload: UserIn) -> dict[str, Any]:
     with db() as conn:
         existing = conn.execute("SELECT * FROM users WHERE lower(email) = lower(?)", (payload.email,)).fetchone()
         if existing:
-            return dict(existing)
+            if payload.password and (not existing["password_salt"] or not existing["password_hash"]):
+                salt, password_hash = hash_password(payload.password)
+                conn.execute(
+                    "UPDATE users SET display_name = ?, password_salt = ?, password_hash = ? WHERE id = ?",
+                    (payload.display_name, salt, password_hash, existing["id"]),
+                )
+            return row_to_dict(conn.execute("SELECT id, email, display_name, created_at FROM users WHERE id = ?", (existing["id"],)).fetchone())
+        password_salt = None
+        password_hash = None
+        if payload.password:
+            password_salt, password_hash = hash_password(payload.password)
         cursor = conn.execute(
-            "INSERT INTO users (email, display_name, created_at) VALUES (?, ?, ?)",
-            (payload.email, payload.display_name, stamp),
+            """
+            INSERT INTO users (email, display_name, password_salt, password_hash, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (payload.email, payload.display_name, password_salt, password_hash, stamp),
         )
-        return row_to_dict(conn.execute("SELECT * FROM users WHERE id = ?", (cursor.lastrowid,)).fetchone())
+        return row_to_dict(conn.execute("SELECT id, email, display_name, created_at FROM users WHERE id = ?", (cursor.lastrowid,)).fetchone())
+
+
+@app.post("/api/login")
+def login(payload: LoginIn) -> dict[str, Any]:
+    stamp = now()
+    with db() as conn:
+        user = conn.execute("SELECT * FROM users WHERE lower(email) = lower(?)", (payload.email,)).fetchone()
+        if user is None:
+            salt, password_hash = hash_password(payload.password)
+            cursor = conn.execute(
+                """
+                INSERT INTO users (email, display_name, password_salt, password_hash, created_at)
+                VALUES (?, '', ?, ?, ?)
+                """,
+                (payload.email, salt, password_hash, stamp),
+            )
+            return row_to_dict(conn.execute("SELECT id, email, display_name, created_at FROM users WHERE id = ?", (cursor.lastrowid,)).fetchone())
+        if not user["password_salt"] or not user["password_hash"]:
+            salt, password_hash = hash_password(payload.password)
+            conn.execute(
+                "UPDATE users SET password_salt = ?, password_hash = ? WHERE id = ?",
+                (salt, password_hash, user["id"]),
+            )
+            return row_to_dict(conn.execute("SELECT id, email, display_name, created_at FROM users WHERE id = ?", (user["id"],)).fetchone())
+        if not verify_password(payload.password, user["password_salt"], user["password_hash"]):
+            raise HTTPException(status_code=401, detail="Invalid email or password")
+        return row_to_dict(conn.execute("SELECT id, email, display_name, created_at FROM users WHERE id = ?", (user["id"],)).fetchone())
 
 
 @app.get("/api/budget-profiles")
