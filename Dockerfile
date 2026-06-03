@@ -21,6 +21,7 @@ WORKDIR /app
 RUN apt-get update \
     && apt-get install -y --no-install-recommends nginx supervisor \
     && rm -rf /var/lib/apt/lists/* \
+    && rm -f /etc/nginx/sites-enabled/default /etc/nginx/sites-available/default \
     && mkdir -p /data /run/nginx /var/log/nginx
 
 COPY backend/requirements.txt /app/backend/requirements.txt
