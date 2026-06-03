@@ -1,0 +1,12 @@
+services:
+  chunky-cat-budget:
+    image: ghcr.io/caidenreynolds/chunkycatbudget:latest
+    container_name: chunky-cat-budget
+    environment:
+      DATABASE_URL: sqlite:////data/budget.db
+      CORS_ORIGINS: "*"
+    ports:
+      - "8080:80"
+    volumes:
+      - /mnt/user/appdata/chunky-cat-budget:/data
+    restart: unless-stopped

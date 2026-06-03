@@ -1,144 +1,133 @@
-# unRAID Docker Install Guide
+# unRAID Install Guide
 
-This app runs as one Docker container:
+This app runs as one Docker container on unRAID.
 
-- Flutter web frontend served by Nginx
-- FastAPI backend served internally by Uvicorn
-- SQLite database persisted at `/data/budget.db`
+## Docker Image
 
-## Requirements
+Use this image:
+ghcr.io/caidenreynolds/chunkycatbudget:latest
 
-- unRAID with Docker enabled
-- A copy of this project on your server
-- One available host port, such as `8080`
 
-## Option 1: Docker Compose
+## Install From unRAID Docker UI
 
-Copy or clone this project to your unRAID server, then open a terminal.
+Create a new container and use these values.
 
-```bash
-cd /mnt/user/appdata
-git clone <your-repo-url> ChunkyCatBudg
-cd ChunkyCatBudg
-docker compose up -d --build
-```
+Name:
+Chunky Cat Budget
 
-Open the app:
 
-```text
-http://<unraid-ip>:8080
-```
+Repository:
+ghcr.io/caidenreynolds/chunkycatbudget:latest
 
-The database is stored in the Docker volume named:
 
-```text
-chunky-cat-budget-data
-```
+Network type:
+Bridge
 
-## Option 2: unRAID Docker Template
 
-If you prefer creating the container from the unRAID Docker UI, use these values.
+## Template Fields
 
-Repository/image:
+Add these fields in the unRAID Docker template.
 
-```text
-chunky-cat-budget
-```
+Type:
+Port
 
-If you are building locally from this project, build the image first:
 
-```bash
-cd /mnt/user/appdata/ChunkyCatBudg
-docker build -t chunky-cat-budget .
-```
+Name:
+Web UI
+
 
 Container port:
-
-```text
 80
-```
+
 
 Host port:
-
-```text
 8080
-```
 
-Volume mapping:
 
-```text
-/mnt/user/appdata/chunky-cat-budget:/data
-```
+Connection type:
+TCP
 
-Environment variable:
 
-```text
-DATABASE_URL=sqlite:////data/budget.db
-```
+Type:
+Path
 
-Optional environment variable:
 
-```text
-CORS_ORIGINS=*
-```
+Name:
+App Data
+
+
+Container path:
+/data
+
+
+Host path:
+/mnt/user/appdata/chunky-cat-budget
+
+
+Type:
+Variable
+
+
+Name:
+Database URL
+
+
+Key:
+DATABASE_URL
+
+
+Value:
+sqlite:////data/budget.db
+
 
 Restart policy:
-
-```text
 unless-stopped
-```
 
-Open the app:
 
-```text
+## Open The App
+
+After the container starts, open:
 http://<unraid-ip>:8080
-```
+
+
+Example:
+http://192.168.1.10:8080
+
 
 ## Updating
 
-From the project directory:
-
-```bash
-git pull
-docker compose up -d --build
-```
+In the unRAID Docker UI:
+1. Check for updates.
+2. Apply the update for Chunky Cat Budget.
+3. Restart the container if unRAID does not restart it automatically.
 
 ## Backup
 
-Back up this directory or Docker volume data regularly:
-
-```text
+Back up this folder:
 /mnt/user/appdata/chunky-cat-budget
-```
 
-The important file is:
 
-```text
-/data/budget.db
-```
+The database file is:
+/mnt/user/appdata/chunky-cat-budget/budget.db
 
-## Troubleshooting
 
-Check container logs:
+## Health Check
 
-```bash
-docker logs chunky-cat-budget
-```
+To confirm the app is running:
+http://<unraid-ip>:8080/api/health
 
-Check that the API is healthy:
-
-```bash
-curl http://<unraid-ip>:8080/api/health
-```
 
 Expected response:
-
-```json
+json
 {"status":"ok"}
-```
 
-If port `8080` is already used, choose another host port, such as `8090`, and open:
 
-```text
+## If Port 8080 Is Already Used
+
+Use another host port, such as:
+8090
+
+
+Then open:
 http://<unraid-ip>:8090
-```
+

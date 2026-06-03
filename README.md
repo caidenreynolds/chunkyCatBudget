@@ -35,6 +35,8 @@ The Docker image is an all-in-one web app container:
 - Nginx proxies `/api/*` to FastAPI inside the container.
 - SQLite persists at `/data/budget.db`.
 
+Local build:
+
 ```bash
 docker compose up -d --build
 ```
@@ -45,27 +47,8 @@ Open:
 http://localhost:8080
 ```
 
-The SQLite database is stored in the `chunky-cat-budget-data` Docker volume.
+The local Compose database is stored in the `chunky-cat-budget-data` Docker volume.
 
 ## unRAID
 
 Full unRAID install instructions are in [docs/unRAID_Install.md](docs/unRAID_Install.md).
-
-Use a single container with:
-
-- Container port: `80`
-- Host port: `8080` or another available port
-- Volume mapping: `/mnt/user/appdata/chunky-cat-budget:/data`
-- Database URL: `sqlite:////data/budget.db`
-
-If using Compose on unRAID:
-
-```bash
-docker compose up -d --build
-```
-
-Then open:
-
-```text
-http://<unraid-ip>:8080
-```
