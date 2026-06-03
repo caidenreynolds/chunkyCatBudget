@@ -47,11 +47,29 @@ class ChunkyCatBudgApp extends StatelessWidget {
 }
 
 class BudgetApi {
+  int? activeProfileId;
+
   Uri _uri(String path) {
-    if (apiBaseUrl.isNotEmpty) {
-      return Uri.parse('$apiBaseUrl$path');
+    var resolvedPath = path;
+    if (_usesActiveProfile(path) && activeProfileId != null && !path.contains('profile_id=')) {
+      resolvedPath = '$path${path.contains('?') ? '&' : '?'}profile_id=$activeProfileId';
     }
-    return Uri.base.resolve(path.startsWith('/') ? path.substring(1) : path);
+    if (apiBaseUrl.isNotEmpty) {
+      return Uri.parse('$apiBaseUrl$resolvedPath');
+    }
+    return Uri.base.resolve(resolvedPath.startsWith('/') ? resolvedPath.substring(1) : resolvedPath);
+  }
+
+  bool _usesActiveProfile(String path) {
+    return path.startsWith('/api/dashboard/') ||
+        path == '/api/accounts' ||
+        path.startsWith('/api/accounts/') ||
+        path == '/api/paycheck-profile' ||
+        path == '/api/chunks' ||
+        path.startsWith('/api/chunks/') ||
+        path.startsWith('/api/paychecks') ||
+        path == '/api/money-movements' ||
+        path == '/api/transactions';
   }
 
   Future<dynamic> get(String path) async {
@@ -103,6 +121,7 @@ class _BudgetHomeState extends State<BudgetHome> {
   final api = BudgetApi();
   var selected = 0;
   Map<String, dynamic>? currentUser;
+  Map<String, dynamic>? selectedProfile;
   Future<Map<String, dynamic>>? summaryFuture;
 
   final screens = const [
@@ -127,14 +146,36 @@ class _BudgetHomeState extends State<BudgetHome> {
   void signIn(Map<String, dynamic> user) {
     setState(() {
       currentUser = user;
+      selectedProfile = null;
+      api.activeProfileId = null;
+      selected = 0;
+      summaryFuture = null;
+    });
+  }
+
+  void selectProfile(Map<String, dynamic> profile) {
+    setState(() {
+      selectedProfile = profile;
+      api.activeProfileId = profile['id'] as int;
       selected = 0;
       summaryFuture = _loadSummary();
+    });
+  }
+
+  void chooseAnotherProfile() {
+    setState(() {
+      selectedProfile = null;
+      api.activeProfileId = null;
+      selected = 0;
+      summaryFuture = null;
     });
   }
 
   void signOut() {
     setState(() {
       currentUser = null;
+      selectedProfile = null;
+      api.activeProfileId = null;
       selected = 0;
       summaryFuture = null;
     });
@@ -150,6 +191,11 @@ class _BudgetHomeState extends State<BudgetHome> {
     if (user == null) {
       return LoginScreen(api: api, onSignedIn: signIn);
     }
+    final profile = selectedProfile;
+    if (profile == null) {
+      return ProfileSelectionScreen(api: api, user: user, onProfileSelected: selectProfile, onSignOut: signOut);
+    }
+    final canEdit = profile['role'] == 'admin';
 
     return FutureBuilder<Map<String, dynamic>>(
       future: summaryFuture,
@@ -170,6 +216,8 @@ class _BudgetHomeState extends State<BudgetHome> {
                         api: api,
                         refresh: refresh,
                         goTo: openScreen,
+                        canEdit: canEdit,
+                        selectedProfile: profile,
                       );
 
             if (isDesktop) {
@@ -178,6 +226,8 @@ class _BudgetHomeState extends State<BudgetHome> {
                 selected: selected,
                 onSelect: openScreen,
                 user: user,
+                profile: profile,
+                onChangeProfile: chooseAnotherProfile,
                 onSignOut: signOut,
                 child: child,
               );
@@ -186,6 +236,8 @@ class _BudgetHomeState extends State<BudgetHome> {
               selected: selected,
               onSelect: openScreen,
               user: user,
+              profile: profile,
+              onChangeProfile: chooseAnotherProfile,
               onSignOut: signOut,
               child: child,
             );
@@ -279,12 +331,155 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 }
 
+class ProfileSelectionScreen extends StatefulWidget {
+  const ProfileSelectionScreen({
+    super.key,
+    required this.api,
+    required this.user,
+    required this.onProfileSelected,
+    required this.onSignOut,
+  });
+
+  final BudgetApi api;
+  final Map<String, dynamic> user;
+  final ValueChanged<Map<String, dynamic>> onProfileSelected;
+  final VoidCallback onSignOut;
+
+  @override
+  State<ProfileSelectionScreen> createState() => _ProfileSelectionScreenState();
+}
+
+class _ProfileSelectionScreenState extends State<ProfileSelectionScreen> {
+  late Future<Map<String, List<Map<String, dynamic>>>> profileData = _loadProfileData();
+  final profileName = TextEditingController();
+  var creating = false;
+  var acceptingInvitationId = 0;
+
+  Future<Map<String, List<Map<String, dynamic>>>> _loadProfileData() async {
+    final profiles = listOfMaps(await widget.api.get('/api/budget-profiles?user_id=${widget.user['id']}'));
+    final invitations = listOfMaps(await widget.api.get('/api/invitations?email=${Uri.encodeComponent(widget.user['email'].toString())}'))
+        .where((invitation) => invitation['status'] == 'pending')
+        .toList();
+    return {'profiles': profiles, 'invitations': invitations};
+  }
+
+  void reload() {
+    setState(() => profileData = _loadProfileData());
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isPhone = MediaQuery.sizeOf(context).width < 600;
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Budget Profiles'),
+        actions: [
+          IconButton(onPressed: widget.onSignOut, tooltip: 'Sign out', icon: const Icon(Icons.logout)),
+        ],
+      ),
+      body: SafeArea(
+        child: FutureBuilder<Map<String, List<Map<String, dynamic>>>>(
+          future: profileData,
+          builder: (context, snapshot) {
+            final rows = snapshot.data?['profiles'] ?? [];
+            final invitations = snapshot.data?['invitations'] ?? [];
+            return ListView(
+              padding: EdgeInsets.all(isPhone ? 14 : 22),
+              children: [
+                Text(widget.user['email']?.toString() ?? '', style: const TextStyle(fontWeight: FontWeight.w800)),
+                const SizedBox(height: 14),
+                _SectionTitle('Profiles You Can Access'),
+                _DataCard(
+                  emptyText: snapshot.connectionState == ConnectionState.waiting ? 'Loading profiles' : 'No profiles yet',
+                  children: rows.map((profile) {
+                    final isAdmin = profile['role'] == 'admin';
+                    return ListTile(
+                      leading: Icon(isAdmin ? Icons.admin_panel_settings_outlined : Icons.visibility_outlined),
+                      title: Text(profile['name'].toString(), style: const TextStyle(fontWeight: FontWeight.w800)),
+                      subtitle: Text(isAdmin ? 'Admin access' : 'Read only access'),
+                      trailing: const Icon(Icons.chevron_right),
+                      onTap: () => widget.onProfileSelected(profile),
+                    );
+                  }).toList(),
+                ),
+                if (invitations.isNotEmpty) ...[
+                  const SizedBox(height: 20),
+                  _SectionTitle('Pending Invitations'),
+                  _DataCard(
+                    emptyText: 'No pending invitations',
+                    children: invitations.map((invitation) {
+                      final id = invitation['id'] as int;
+                      return ListTile(
+                        leading: const Icon(Icons.mail_outline),
+                        title: Text(invitation['email'].toString(), style: const TextStyle(fontWeight: FontWeight.w800)),
+                        subtitle: Text(invitation['role'] == 'admin' ? 'Admin invitation' : 'Read only invitation'),
+                        trailing: FilledButton(
+                          onPressed: acceptingInvitationId == id ? null : () => _acceptInvitation(id),
+                          child: Text(acceptingInvitationId == id ? 'Accepting' : 'Accept'),
+                        ),
+                      );
+                    }).toList(),
+                  ),
+                ],
+                const SizedBox(height: 20),
+                _SectionTitle('Create Profile'),
+                _SettingsCard(
+                  children: [
+                    TextField(controller: profileName, decoration: const InputDecoration(labelText: 'Profile name')),
+                    _SubmitButton(saving: creating, label: 'Create Profile', onPressed: _createProfile),
+                  ],
+                ),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  Future<void> _createProfile() async {
+    setState(() => creating = true);
+    try {
+      await widget.api.post('/api/budget-profiles', {
+        'name': profileName.text,
+        'owner_user_id': widget.user['id'],
+      });
+      profileName.clear();
+      reload();
+      if (!mounted) return;
+      toast(context, 'Profile created');
+    } catch (error) {
+      if (!mounted) return;
+      toast(context, error.toString());
+    } finally {
+      if (mounted) setState(() => creating = false);
+    }
+  }
+
+  Future<void> _acceptInvitation(int invitationId) async {
+    setState(() => acceptingInvitationId = invitationId);
+    try {
+      await widget.api.post('/api/invitations/$invitationId/accept', {'user_id': widget.user['id']});
+      reload();
+      if (!mounted) return;
+      toast(context, 'Invitation accepted');
+    } catch (error) {
+      if (!mounted) return;
+      toast(context, error.toString());
+    } finally {
+      if (mounted) setState(() => acceptingInvitationId = 0);
+    }
+  }
+}
+
 class _DesktopShell extends StatelessWidget {
   const _DesktopShell({
     required this.screens,
     required this.selected,
     required this.onSelect,
     required this.user,
+    required this.profile,
+    required this.onChangeProfile,
     required this.onSignOut,
     required this.child,
   });
@@ -293,6 +488,8 @@ class _DesktopShell extends StatelessWidget {
   final int selected;
   final ValueChanged<int> onSelect;
   final Map<String, dynamic> user;
+  final Map<String, dynamic> profile;
+  final VoidCallback onChangeProfile;
   final VoidCallback onSignOut;
   final Widget child;
 
@@ -306,7 +503,7 @@ class _DesktopShell extends StatelessWidget {
             child: SafeArea(
               child: Column(
                 children: [
-                  _SignedInBar(user: user, onSignOut: onSignOut),
+                  _SignedInBar(user: user, profile: profile, onChangeProfile: onChangeProfile, onSignOut: onSignOut),
                   Expanded(child: child),
                 ],
               ),
@@ -323,6 +520,8 @@ class _PhoneShell extends StatelessWidget {
     required this.selected,
     required this.onSelect,
     required this.user,
+    required this.profile,
+    required this.onChangeProfile,
     required this.onSignOut,
     required this.child,
   });
@@ -332,6 +531,8 @@ class _PhoneShell extends StatelessWidget {
   final int selected;
   final ValueChanged<int> onSelect;
   final Map<String, dynamic> user;
+  final Map<String, dynamic> profile;
+  final VoidCallback onChangeProfile;
   final VoidCallback onSignOut;
   final Widget child;
 
@@ -340,8 +541,9 @@ class _PhoneShell extends StatelessWidget {
     final navIndex = routes.contains(selected) ? routes.indexOf(selected) : routes.length - 1;
     return Scaffold(
       appBar: AppBar(
-        title: Text(user['email']?.toString() ?? 'Signed in'),
+        title: Text(profile['name']?.toString() ?? 'Budget'),
         actions: [
+          IconButton(onPressed: onChangeProfile, tooltip: 'Switch profile', icon: const Icon(Icons.folder_open)),
           IconButton(onPressed: onSignOut, tooltip: 'Sign out', icon: const Icon(Icons.logout)),
         ],
       ),
@@ -363,8 +565,10 @@ class _PhoneShell extends StatelessWidget {
 }
 
 class _SignedInBar extends StatelessWidget {
-  const _SignedInBar({required this.user, required this.onSignOut});
+  const _SignedInBar({required this.user, required this.profile, required this.onChangeProfile, required this.onSignOut});
   final Map<String, dynamic> user;
+  final Map<String, dynamic> profile;
+  final VoidCallback onChangeProfile;
   final VoidCallback onSignOut;
 
   @override
@@ -377,13 +581,25 @@ class _SignedInBar extends StatelessWidget {
           const Icon(Icons.person_outline, size: 20),
           const SizedBox(width: 8),
           Expanded(
-            child: Text(
-              user['email']?.toString() ?? 'Signed in',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontWeight: FontWeight.w700),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  profile['name']?.toString() ?? 'Budget',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontWeight: FontWeight.w800),
+                ),
+                Text(
+                  '${user['email']}  |  ${profile['role'] == 'admin' ? 'Admin' : 'Read only'}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: Color(0xFF667085), fontSize: 12),
+                ),
+              ],
             ),
           ),
+          TextButton.icon(onPressed: onChangeProfile, icon: const Icon(Icons.folder_open), label: const Text('Switch')),
           TextButton.icon(onPressed: onSignOut, icon: const Icon(Icons.logout), label: const Text('Sign Out')),
         ],
       ),
@@ -459,6 +675,8 @@ class _ScreenHost extends StatelessWidget {
     required this.api,
     required this.refresh,
     required this.goTo,
+    required this.canEdit,
+    required this.selectedProfile,
   });
 
   final int selected;
@@ -466,28 +684,31 @@ class _ScreenHost extends StatelessWidget {
   final BudgetApi api;
   final VoidCallback refresh;
   final ValueChanged<int> goTo;
+  final bool canEdit;
+  final Map<String, dynamic> selectedProfile;
 
   @override
   Widget build(BuildContext context) {
     return switch (selected) {
-      0 => DashboardScreen(data: data, refresh: refresh, goTo: goTo),
-      1 => PaycheckSetupScreen(data: data, api: api, refresh: refresh),
-      2 => AccountsScreen(data: data, api: api, refresh: refresh),
-      3 => ChunksScreen(data: data, api: api, refresh: refresh),
-      4 => AddPaycheckScreen(data: data, api: api, refresh: refresh),
-      5 => TransfersScreen(data: data, api: api, refresh: refresh),
-      6 => TransactionsScreen(data: data, api: api, refresh: refresh),
+      0 => DashboardScreen(data: data, refresh: refresh, goTo: goTo, canEdit: canEdit),
+      1 => PaycheckSetupScreen(data: data, api: api, refresh: refresh, canEdit: canEdit),
+      2 => AccountsScreen(data: data, api: api, refresh: refresh, canEdit: canEdit),
+      3 => ChunksScreen(data: data, api: api, refresh: refresh, canEdit: canEdit),
+      4 => AddPaycheckScreen(data: data, api: api, refresh: refresh, canEdit: canEdit),
+      5 => TransfersScreen(data: data, api: api, refresh: refresh, canEdit: canEdit),
+      6 => TransactionsScreen(data: data, api: api, refresh: refresh, canEdit: canEdit),
       8 => MobileMoreScreen(goTo: goTo),
-      _ => SettingsScreen(api: api),
+      _ => SettingsScreen(api: api, selectedProfile: selectedProfile, canEdit: canEdit),
     };
   }
 }
 
 class DashboardScreen extends StatelessWidget {
-  const DashboardScreen({super.key, required this.data, required this.refresh, required this.goTo});
+  const DashboardScreen({super.key, required this.data, required this.refresh, required this.goTo, required this.canEdit});
   final Map<String, dynamic> data;
   final VoidCallback refresh;
   final ValueChanged<int> goTo;
+  final bool canEdit;
 
   @override
   Widget build(BuildContext context) {
@@ -514,7 +735,7 @@ class DashboardScreen extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 16),
-          _DashboardActions(isPhone: isPhone, goTo: goTo),
+          if (canEdit) _DashboardActions(isPhone: isPhone, goTo: goTo),
           const SizedBox(height: 20),
           _SectionTitle('Accounts'),
           _DataCard(
@@ -629,10 +850,11 @@ class _DashboardActions extends StatelessWidget {
 }
 
 class PaycheckSetupScreen extends StatefulWidget {
-  const PaycheckSetupScreen({super.key, required this.data, required this.api, required this.refresh});
+  const PaycheckSetupScreen({super.key, required this.data, required this.api, required this.refresh, required this.canEdit});
   final Map<String, dynamic> data;
   final BudgetApi api;
   final VoidCallback refresh;
+  final bool canEdit;
 
   @override
   State<PaycheckSetupScreen> createState() => _PaycheckSetupScreenState();
@@ -670,7 +892,7 @@ class _PaycheckSetupScreenState extends State<PaycheckSetupScreen> {
           _SubmitButton(
             saving: saving,
             label: 'Save Profile',
-            onPressed: _save,
+            onPressed: widget.canEdit ? _save : null,
           ),
         ],
       ),
@@ -699,10 +921,11 @@ class _PaycheckSetupScreenState extends State<PaycheckSetupScreen> {
 }
 
 class AccountsScreen extends StatelessWidget {
-  const AccountsScreen({super.key, required this.data, required this.api, required this.refresh});
+  const AccountsScreen({super.key, required this.data, required this.api, required this.refresh, required this.canEdit});
   final Map<String, dynamic> data;
   final BudgetApi api;
   final VoidCallback refresh;
+  final bool canEdit;
 
   @override
   Widget build(BuildContext context) {
@@ -710,7 +933,7 @@ class AccountsScreen extends StatelessWidget {
     final accounts = listOfMaps(data['accounts']);
     return _Page(
       title: 'Accounts',
-      actions: [FilledButton.icon(onPressed: () => showAccountDialog(context, api, refresh), icon: const Icon(Icons.add), label: const Text('New'))],
+      actions: canEdit ? [FilledButton.icon(onPressed: () => showAccountDialog(context, api, refresh), icon: const Icon(Icons.add), label: const Text('New'))] : [],
       child: ListView(
         padding: EdgeInsets.all(isPhone ? 14 : 20),
         children: [
@@ -731,10 +954,11 @@ class AccountsScreen extends StatelessWidget {
 }
 
 class ChunksScreen extends StatelessWidget {
-  const ChunksScreen({super.key, required this.data, required this.api, required this.refresh});
+  const ChunksScreen({super.key, required this.data, required this.api, required this.refresh, required this.canEdit});
   final Map<String, dynamic> data;
   final BudgetApi api;
   final VoidCallback refresh;
+  final bool canEdit;
 
   @override
   Widget build(BuildContext context) {
@@ -743,7 +967,7 @@ class ChunksScreen extends StatelessWidget {
     final accounts = listOfMaps(data['accounts']);
     return _Page(
       title: 'Chunks',
-      actions: [FilledButton.icon(onPressed: accounts.isEmpty ? null : () => showChunkDialog(context, api, refresh, accounts), icon: const Icon(Icons.add), label: const Text('New'))],
+      actions: canEdit ? [FilledButton.icon(onPressed: accounts.isEmpty ? null : () => showChunkDialog(context, api, refresh, accounts), icon: const Icon(Icons.add), label: const Text('New'))] : [],
       child: ListView(
         padding: EdgeInsets.all(isPhone ? 14 : 20),
         children: [
@@ -764,10 +988,11 @@ class ChunksScreen extends StatelessWidget {
 }
 
 class AddPaycheckScreen extends StatefulWidget {
-  const AddPaycheckScreen({super.key, required this.data, required this.api, required this.refresh});
+  const AddPaycheckScreen({super.key, required this.data, required this.api, required this.refresh, required this.canEdit});
   final Map<String, dynamic> data;
   final BudgetApi api;
   final VoidCallback refresh;
+  final bool canEdit;
 
   @override
   State<AddPaycheckScreen> createState() => _AddPaycheckScreenState();
@@ -802,7 +1027,7 @@ class _AddPaycheckScreenState extends State<AddPaycheckScreen> {
           _SubmitButton(
             saving: saving,
             label: 'Add Paycheck',
-            onPressed: profile == null || accountId == null ? null : _add,
+            onPressed: !widget.canEdit || profile == null || accountId == null ? null : _add,
           ),
         ],
       ),
@@ -830,10 +1055,11 @@ class _AddPaycheckScreenState extends State<AddPaycheckScreen> {
 }
 
 class TransfersScreen extends StatefulWidget {
-  const TransfersScreen({super.key, required this.data, required this.api, required this.refresh});
+  const TransfersScreen({super.key, required this.data, required this.api, required this.refresh, required this.canEdit});
   final Map<String, dynamic> data;
   final BudgetApi api;
   final VoidCallback refresh;
+  final bool canEdit;
 
   @override
   State<TransfersScreen> createState() => _TransfersScreenState();
@@ -874,7 +1100,7 @@ class _TransfersScreenState extends State<TransfersScreen> {
               if (destinationType != 'outside_account') _EntityDropdown(label: 'Destination', type: destinationType == 'chunk' ? 'chunk' : 'unallocated', id: destinationId, accounts: accounts, chunks: chunks, onChanged: (v) => setState(() => destinationId = v)),
               _MoneyField(label: 'Amount', controller: amount),
               TextField(controller: note, decoration: const InputDecoration(labelText: 'Note')),
-              _SubmitButton(saving: saving, label: 'Log Movement', onPressed: sourceId == null ? null : _save),
+              _SubmitButton(saving: saving, label: 'Log Movement', onPressed: !widget.canEdit || sourceId == null ? null : _save),
             ],
           ),
           const SizedBox(height: 20),
@@ -914,10 +1140,11 @@ class _TransfersScreenState extends State<TransfersScreen> {
 }
 
 class TransactionsScreen extends StatefulWidget {
-  const TransactionsScreen({super.key, required this.data, required this.api, required this.refresh});
+  const TransactionsScreen({super.key, required this.data, required this.api, required this.refresh, required this.canEdit});
   final Map<String, dynamic> data;
   final BudgetApi api;
   final VoidCallback refresh;
+  final bool canEdit;
 
   @override
   State<TransactionsScreen> createState() => _TransactionsScreenState();
@@ -954,7 +1181,7 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
               _MoneyField(label: 'Amount', controller: amount),
               TextField(controller: description, decoration: const InputDecoration(labelText: 'Description')),
               _DropdownField(label: 'Allocation', value: allocationType, values: const ['chunk', 'unallocated', 'outside_account'], onChanged: (v) => setState(() => allocationType = v ?? allocationType)),
-              _SubmitButton(saving: saving, label: 'Add Transaction', onPressed: accountId == null ? null : _save),
+              _SubmitButton(saving: saving, label: 'Add Transaction', onPressed: !widget.canEdit || accountId == null ? null : _save),
             ],
           ),
           const SizedBox(height: 20),
@@ -998,8 +1225,10 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
 }
 
 class SettingsScreen extends StatefulWidget {
-  const SettingsScreen({super.key, required this.api});
+  const SettingsScreen({super.key, required this.api, required this.selectedProfile, required this.canEdit});
   final BudgetApi api;
+  final Map<String, dynamic> selectedProfile;
+  final bool canEdit;
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
@@ -1009,19 +1238,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late Future<Map<String, List<Map<String, dynamic>>>> data = _load();
   final userEmail = TextEditingController();
   final userName = TextEditingController();
-  final profileName = TextEditingController();
   final inviteEmail = TextEditingController();
-  int? ownerUserId;
-  int? inviteProfileId;
   int? inviterUserId;
   var inviteRole = 'read_only';
   var saving = false;
 
   Future<Map<String, List<Map<String, dynamic>>>> _load() async {
     final users = listOfMaps(await widget.api.get('/api/users'));
-    final profiles = listOfMaps(await widget.api.get('/api/budget-profiles'));
-    final invitations = listOfMaps(await widget.api.get('/api/invitations'));
-    return {'users': users, 'profiles': profiles, 'invitations': invitations};
+    final invitations = listOfMaps(await widget.api.get('/api/invitations?profile_id=${widget.selectedProfile['id']}'));
+    return {'users': users, 'invitations': invitations};
   }
 
   void reload() {
@@ -1037,52 +1262,31 @@ class _SettingsScreenState extends State<SettingsScreen> {
         future: data,
         builder: (context, snapshot) {
           final users = snapshot.data?['users'] ?? [];
-          final profiles = snapshot.data?['profiles'] ?? [];
           final invitations = snapshot.data?['invitations'] ?? [];
-          ownerUserId ??= users.isNotEmpty ? users.first['id'] as int : null;
           inviterUserId ??= users.isNotEmpty ? users.first['id'] as int : null;
-          inviteProfileId ??= profiles.isNotEmpty ? profiles.first['id'] as int : null;
 
           return ListView(
             padding: EdgeInsets.all(isPhone ? 14 : 20),
             children: [
-              const _Notice('Users can belong to zero or more budget profiles. The user who creates a profile is its admin.'),
+              _Notice(widget.canEdit
+                  ? 'Admins can invite other users to this profile as admin or read only.'
+                  : 'This profile is read only for you. You can view balances, accounts, chunks, and activity.'),
               const SizedBox(height: 14),
-              _SectionTitle('Create User'),
-              _SettingsCard(
-                children: [
-                  TextField(controller: userEmail, decoration: const InputDecoration(labelText: 'Email')),
-                  TextField(controller: userName, decoration: const InputDecoration(labelText: 'Display name')),
-                  _SubmitButton(saving: saving, label: 'Create User', onPressed: _createUser),
-                ],
-              ),
-              const SizedBox(height: 18),
-              _SectionTitle('Create Budget Profile'),
-              _SettingsCard(
-                children: [
-                  TextField(controller: profileName, decoration: const InputDecoration(labelText: 'Profile name')),
-                  _DropdownField<int>(
-                    label: 'Admin user',
-                    value: ownerUserId,
-                    values: users.map((u) => u['id'] as int).toList(),
-                    labelFor: (id) => users.firstWhere((u) => u['id'] == id)['email'].toString(),
-                    onChanged: (v) => setState(() => ownerUserId = v),
-                  ),
-                  _SubmitButton(saving: saving, label: 'Create Profile', onPressed: ownerUserId == null ? null : _createProfile),
-                ],
-              ),
-              const SizedBox(height: 18),
+              if (widget.canEdit) ...[
+                _SectionTitle('Create User'),
+                _SettingsCard(
+                  children: [
+                    TextField(controller: userEmail, decoration: const InputDecoration(labelText: 'Email')),
+                    TextField(controller: userName, decoration: const InputDecoration(labelText: 'Display name')),
+                    _SubmitButton(saving: saving, label: 'Create User', onPressed: _createUser),
+                  ],
+                ),
+                const SizedBox(height: 18),
+              ],
               _SectionTitle('Invite User'),
               _SettingsCard(
                 children: [
                   TextField(controller: inviteEmail, decoration: const InputDecoration(labelText: 'Invite email')),
-                  _DropdownField<int>(
-                    label: 'Budget profile',
-                    value: inviteProfileId,
-                    values: profiles.map((p) => p['id'] as int).toList(),
-                    labelFor: (id) => profiles.firstWhere((p) => p['id'] == id)['name'].toString(),
-                    onChanged: (v) => setState(() => inviteProfileId = v),
-                  ),
                   _DropdownField<int>(
                     label: 'Inviting admin',
                     value: inviterUserId,
@@ -1100,7 +1304,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   _SubmitButton(
                     saving: saving,
                     label: 'Create Invitation',
-                    onPressed: inviteProfileId == null || inviterUserId == null ? null : _invite,
+                    onPressed: !widget.canEdit || inviterUserId == null ? null : _invite,
                   ),
                 ],
               ),
@@ -1109,12 +1313,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
               _DataCard(
                 emptyText: snapshot.connectionState == ConnectionState.waiting ? 'Loading users' : 'No users yet',
                 children: users.map((u) => _ListRow(title: u['email'].toString(), subtitle: u['display_name'].toString(), trailing: '#${u['id']}')).toList(),
-              ),
-              const SizedBox(height: 18),
-              _SectionTitle('Budget Profiles'),
-              _DataCard(
-                emptyText: 'No budget profiles yet',
-                children: profiles.map((p) => _ListRow(title: p['name'].toString(), subtitle: 'Owner user #${p['owner_user_id']}', trailing: '#${p['id']}')).toList(),
               ),
               const SizedBox(height: 18),
               _SectionTitle('Invitations'),
@@ -1146,26 +1344,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  Future<void> _createProfile() async {
-    setState(() => saving = true);
-    try {
-      await widget.api.post('/api/budget-profiles', {'name': profileName.text, 'owner_user_id': ownerUserId});
-      profileName.clear();
-      reload();
-      if (!mounted) return;
-      toast(context, 'Budget profile created');
-    } catch (error) {
-      if (!mounted) return;
-      toast(context, error.toString());
-    } finally {
-      if (mounted) setState(() => saving = false);
-    }
-  }
-
   Future<void> _invite() async {
     setState(() => saving = true);
     try {
-      await widget.api.post('/api/budget-profiles/$inviteProfileId/invitations', {
+      await widget.api.post('/api/budget-profiles/${widget.selectedProfile['id']}/invitations', {
         'email': inviteEmail.text,
         'role': inviteRole,
         'invited_by_user_id': inviterUserId,
