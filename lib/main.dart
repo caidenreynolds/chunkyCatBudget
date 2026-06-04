@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:intl/intl.dart';
 
 void main() {
   runApp(const ChunkyCatBudgApp());
@@ -92,6 +93,11 @@ class BudgetApi {
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode(body),
     );
+    return _decode(response);
+  }
+
+  Future<dynamic> delete(String path) async {
+    final response = await http.delete(_uri(path));
     return _decode(response);
   }
 
@@ -189,7 +195,7 @@ class _BudgetHomeState extends State<BudgetHome> {
   Widget build(BuildContext context) {
     final user = currentUser;
     if (user == null) {
-      return LoginScreen(api: api, onSignedIn: signIn);
+      return AuthGateway(api: api, onSignedIn: signIn);
     }
     final profile = selectedProfile;
     if (profile == null) {
@@ -248,10 +254,40 @@ class _BudgetHomeState extends State<BudgetHome> {
   }
 }
 
-class LoginScreen extends StatefulWidget {
-  const LoginScreen({super.key, required this.api, required this.onSignedIn});
+class AuthGateway extends StatefulWidget {
+  const AuthGateway({super.key, required this.api, required this.onSignedIn});
   final BudgetApi api;
   final ValueChanged<Map<String, dynamic>> onSignedIn;
+
+  @override
+  State<AuthGateway> createState() => _AuthGatewayState();
+}
+
+class _AuthGatewayState extends State<AuthGateway> {
+  var createAccount = false;
+
+  @override
+  Widget build(BuildContext context) {
+    if (createAccount) {
+      return CreateAccountScreen(
+        api: widget.api,
+        onCreated: widget.onSignedIn,
+        onSignIn: () => setState(() => createAccount = false),
+      );
+    }
+    return LoginScreen(
+      api: widget.api,
+      onSignedIn: widget.onSignedIn,
+      onCreateAccount: () => setState(() => createAccount = true),
+    );
+  }
+}
+
+class LoginScreen extends StatefulWidget {
+  const LoginScreen({super.key, required this.api, required this.onSignedIn, required this.onCreateAccount});
+  final BudgetApi api;
+  final ValueChanged<Map<String, dynamic>> onSignedIn;
+  final VoidCallback onCreateAccount;
 
   @override
   State<LoginScreen> createState() => _LoginScreenState();
@@ -304,6 +340,8 @@ class _LoginScreenState extends State<LoginScreen> {
                           label: const Text('Sign In'),
                         ),
                       ),
+                      const SizedBox(height: 10),
+                      TextButton(onPressed: widget.onCreateAccount, child: const Text('Create an account')),
                     ],
                   ),
                 ),
@@ -332,6 +370,93 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 }
 
+class CreateAccountScreen extends StatefulWidget {
+  const CreateAccountScreen({super.key, required this.api, required this.onCreated, required this.onSignIn});
+  final BudgetApi api;
+  final ValueChanged<Map<String, dynamic>> onCreated;
+  final VoidCallback onSignIn;
+
+  @override
+  State<CreateAccountScreen> createState() => _CreateAccountScreenState();
+}
+
+class _CreateAccountScreenState extends State<CreateAccountScreen> {
+  final email = TextEditingController();
+  final displayName = TextEditingController();
+  final password = TextEditingController();
+  final confirmPassword = TextEditingController();
+  var creating = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: SafeArea(
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(18),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 440),
+              child: Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(22),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      const Text('Create Account', style: TextStyle(fontSize: 26, fontWeight: FontWeight.w900)),
+                      const SizedBox(height: 6),
+                      const Text('Email verification will be enabled when an email provider is configured.', style: TextStyle(color: Color(0xFF667085))),
+                      const SizedBox(height: 20),
+                      TextField(controller: displayName, decoration: const InputDecoration(labelText: 'Display name')),
+                      const SizedBox(height: 12),
+                      TextField(controller: email, keyboardType: TextInputType.emailAddress, decoration: const InputDecoration(labelText: 'Email')),
+                      const SizedBox(height: 12),
+                      TextField(controller: password, obscureText: true, decoration: const InputDecoration(labelText: 'Password')),
+                      const SizedBox(height: 12),
+                      TextField(controller: confirmPassword, obscureText: true, decoration: const InputDecoration(labelText: 'Confirm password')),
+                      const SizedBox(height: 18),
+                      SizedBox(
+                        height: 50,
+                        child: FilledButton.icon(
+                          onPressed: creating ? null : _create,
+                          icon: creating ? const SizedBox.square(dimension: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.person_add),
+                          label: const Text('Create Account'),
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      TextButton(onPressed: widget.onSignIn, child: const Text('Back to sign in')),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _create() async {
+    if (password.text != confirmPassword.text) {
+      toast(context, 'Passwords do not match');
+      return;
+    }
+    setState(() => creating = true);
+    try {
+      final user = Map<String, dynamic>.from(await widget.api.post('/api/register', {
+        'email': email.text.trim(),
+        'display_name': displayName.text.trim(),
+        'password': password.text,
+      }));
+      widget.onCreated(user);
+    } catch (error) {
+      if (!mounted) return;
+      toast(context, error.toString());
+    } finally {
+      if (mounted) setState(() => creating = false);
+    }
+  }
+}
+
 class ProfileSelectionScreen extends StatefulWidget {
   const ProfileSelectionScreen({
     super.key,
@@ -353,8 +478,10 @@ class ProfileSelectionScreen extends StatefulWidget {
 class _ProfileSelectionScreenState extends State<ProfileSelectionScreen> {
   late Future<Map<String, List<Map<String, dynamic>>>> profileData = _loadProfileData();
   final profileName = TextEditingController();
+  final selectedProfileIds = <int>{};
   var creating = false;
   var acceptingInvitationId = 0;
+  var selectionMode = false;
 
   Future<Map<String, List<Map<String, dynamic>>>> _loadProfileData() async {
     final profiles = listOfMaps(await widget.api.get('/api/budget-profiles?user_id=${widget.user['id']}'));
@@ -375,6 +502,20 @@ class _ProfileSelectionScreenState extends State<ProfileSelectionScreen> {
       appBar: AppBar(
         title: const Text('Budget Profiles'),
         actions: [
+          IconButton(
+            onPressed: () => setState(() {
+              selectionMode = !selectionMode;
+              selectedProfileIds.clear();
+            }),
+            tooltip: selectionMode ? 'Done selecting' : 'Select profiles',
+            icon: Icon(selectionMode ? Icons.check : Icons.checklist),
+          ),
+          if (selectionMode)
+            IconButton(
+              onPressed: selectedProfileIds.isEmpty ? null : _deleteSelectedProfiles,
+              tooltip: 'Delete selected profiles',
+              icon: const Icon(Icons.delete_outline),
+            ),
           IconButton(onPressed: widget.onSignOut, tooltip: 'Sign out', icon: const Icon(Icons.logout)),
         ],
       ),
@@ -390,18 +531,50 @@ class _ProfileSelectionScreenState extends State<ProfileSelectionScreen> {
                 Text(widget.user['email']?.toString() ?? '', style: const TextStyle(fontWeight: FontWeight.w800)),
                 const SizedBox(height: 14),
                 _SectionTitle('Profiles You Can Access'),
-                _DataCard(
-                  emptyText: snapshot.connectionState == ConnectionState.waiting ? 'Loading profiles' : 'No profiles yet',
-                  children: rows.map((profile) {
-                    final isAdmin = profile['role'] == 'admin';
-                    return ListTile(
-                      leading: Icon(isAdmin ? Icons.admin_panel_settings_outlined : Icons.visibility_outlined),
-                      title: Text(profile['name'].toString(), style: const TextStyle(fontWeight: FontWeight.w800)),
-                      subtitle: Text(isAdmin ? 'Admin access' : 'Read only access'),
-                      trailing: const Icon(Icons.chevron_right),
-                      onTap: () => widget.onProfileSelected(profile),
-                    );
-                  }).toList(),
+                Card(
+                  child: rows.isEmpty
+                      ? Padding(
+                          padding: const EdgeInsets.all(18),
+                          child: Text(snapshot.connectionState == ConnectionState.waiting ? 'Loading profiles' : 'No profiles yet', style: const TextStyle(color: Color(0xFF667085))),
+                        )
+                      : ReorderableListView.builder(
+                          shrinkWrap: true,
+                          physics: const NeverScrollableScrollPhysics(),
+                          itemCount: rows.length,
+                          onReorder: (oldIndex, newIndex) => _reorderProfiles(rows, oldIndex, newIndex),
+                          itemBuilder: (context, index) {
+                            final profile = rows[index];
+                            final id = profile['id'] as int;
+                            final isAdmin = profile['role'] == 'admin';
+                            return ListTile(
+                              key: ValueKey('profile-$id'),
+                              leading: selectionMode
+                                  ? Checkbox(
+                                      value: selectedProfileIds.contains(id),
+                                      onChanged: (checked) => setState(() {
+                                        if (checked ?? false) {
+                                          selectedProfileIds.add(id);
+                                        } else {
+                                          selectedProfileIds.remove(id);
+                                        }
+                                      }),
+                                    )
+                                  : Icon(isAdmin ? Icons.admin_panel_settings_outlined : Icons.visibility_outlined),
+                              title: Text(profile['name'].toString(), style: const TextStyle(fontWeight: FontWeight.w800)),
+                              subtitle: Text(isAdmin ? 'Admin access' : 'Read only access'),
+                              trailing: selectionMode ? const Icon(Icons.drag_handle) : const Icon(Icons.chevron_right),
+                              onTap: selectionMode
+                                  ? () => setState(() {
+                                        if (selectedProfileIds.contains(id)) {
+                                          selectedProfileIds.remove(id);
+                                        } else {
+                                          selectedProfileIds.add(id);
+                                        }
+                                      })
+                                  : () => widget.onProfileSelected(profile),
+                            );
+                          },
+                        ),
                 ),
                 if (invitations.isNotEmpty) ...[
                   const SizedBox(height: 20),
@@ -469,6 +642,51 @@ class _ProfileSelectionScreenState extends State<ProfileSelectionScreen> {
       toast(context, error.toString());
     } finally {
       if (mounted) setState(() => acceptingInvitationId = 0);
+    }
+  }
+
+  Future<void> _reorderProfiles(List<Map<String, dynamic>> rows, int oldIndex, int newIndex) async {
+    if (newIndex > oldIndex) newIndex -= 1;
+    final reordered = [...rows];
+    final item = reordered.removeAt(oldIndex);
+    reordered.insert(newIndex, item);
+    try {
+      await widget.api.put('/api/budget-profiles/reorder', {
+        'user_id': widget.user['id'],
+        'profile_ids': reordered.map((profile) => profile['id']).toList(),
+      });
+      reload();
+    } catch (error) {
+      if (mounted) toast(context, error.toString());
+    }
+  }
+
+  Future<void> _deleteSelectedProfiles() async {
+    final count = selectedProfileIds.length;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete Profiles'),
+        content: Text('Delete $count selected profile${count == 1 ? '' : 's'}? This permanently deletes each profile and all accounts, chunks, paychecks, transfers, and transactions inside it. This cannot be undone.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Delete')),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      for (final id in selectedProfileIds.toList()) {
+        await widget.api.delete('/api/budget-profiles/$id');
+      }
+      setState(() {
+        selectedProfileIds.clear();
+        selectionMode = false;
+      });
+      reload();
+      if (mounted) toast(context, 'Profiles deleted');
+    } catch (error) {
+      if (mounted) toast(context, error.toString());
     }
   }
 }
@@ -921,7 +1139,7 @@ class _PaycheckSetupScreenState extends State<PaycheckSetupScreen> {
   }
 }
 
-class AccountsScreen extends StatelessWidget {
+class AccountsScreen extends StatefulWidget {
   const AccountsScreen({super.key, required this.data, required this.api, required this.refresh, required this.canEdit});
   final Map<String, dynamic> data;
   final BudgetApi api;
@@ -929,32 +1147,203 @@ class AccountsScreen extends StatelessWidget {
   final bool canEdit;
 
   @override
+  State<AccountsScreen> createState() => _AccountsScreenState();
+}
+
+class _AccountsScreenState extends State<AccountsScreen> {
+  final selectedAccountIds = <int>{};
+  var selectionMode = false;
+
+  @override
   Widget build(BuildContext context) {
     final isPhone = MediaQuery.sizeOf(context).width < 600;
-    final accounts = listOfMaps(data['accounts']);
+    final accounts = listOfMaps(widget.data['accounts']);
     return _Page(
       title: 'Accounts',
-      actions: canEdit ? [FilledButton.icon(onPressed: () => showAccountDialog(context, api, refresh), icon: const Icon(Icons.add), label: const Text('New'))] : [],
+      actions: widget.canEdit
+          ? [
+              IconButton(
+                onPressed: () => setState(() {
+                  selectionMode = !selectionMode;
+                  selectedAccountIds.clear();
+                }),
+                tooltip: selectionMode ? 'Done selecting' : 'Select accounts',
+                icon: Icon(selectionMode ? Icons.check : Icons.checklist),
+              ),
+              if (selectionMode)
+                IconButton(
+                  onPressed: selectedAccountIds.isEmpty ? null : () => _deleteSelected(accounts),
+                  tooltip: 'Delete selected accounts',
+                  icon: const Icon(Icons.delete_outline),
+                ),
+              if (selectionMode)
+                IconButton(
+                  onPressed: selectedAccountIds.isEmpty ? null : () => _moveChunks(accounts),
+                  tooltip: 'Move chunks',
+                  icon: const Icon(Icons.drive_file_move_outline),
+                ),
+              FilledButton.icon(onPressed: () => showAccountDialog(context, widget.api, widget.refresh), icon: const Icon(Icons.add), label: const Text('New')),
+            ]
+          : [],
       child: ListView(
         padding: EdgeInsets.all(isPhone ? 14 : 20),
         children: [
-          if (canEdit) ...[
-            _AccountCreateCard(api: api, refresh: refresh),
+          if (widget.canEdit && !selectionMode) ...[
+            _AccountCreateCard(api: widget.api, refresh: widget.refresh),
             const SizedBox(height: 18),
           ],
-          _DataCard(
-            emptyText: 'Create a real-world account to hold paycheck money',
-            children: accounts.map((a) {
-              return _ListRow(
-                title: a['name'].toString(),
-                subtitle: '${a['type']}  |  Unallocated ${money(a['unallocated_balance'])}',
-                trailing: money(a['balance']),
-              );
-            }).toList(),
+          Card(
+            child: accounts.isEmpty
+                ? const Padding(
+                    padding: EdgeInsets.all(18),
+                    child: Text('Create a real-world account to hold paycheck money', style: TextStyle(color: Color(0xFF667085))),
+                  )
+                : ReorderableListView.builder(
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
+                    itemCount: accounts.length,
+                    onReorder: (oldIndex, newIndex) => _reorderAccounts(accounts, oldIndex, newIndex),
+                    itemBuilder: (context, index) {
+                      final a = accounts[index];
+                      final id = a['id'] as int;
+                      return ListTile(
+                key: ValueKey('account-$id'),
+                leading: selectionMode
+                    ? Checkbox(
+                        value: selectedAccountIds.contains(id),
+                        onChanged: (checked) => setState(() {
+                          if (checked ?? false) {
+                            selectedAccountIds.add(id);
+                          } else {
+                            selectedAccountIds.remove(id);
+                          }
+                        }),
+                      )
+                    : null,
+                title: Text(a['name'].toString(), style: const TextStyle(fontWeight: FontWeight.w800)),
+                subtitle: Text('${a['type']}  |  ${a['source_mode'] == 'bank_connected' ? 'Bank connected' : 'Manual'}  |  Balance ${money(a['balance'])}  |  Unallocated ${money(a['unallocated_balance'])}'),
+                onTap: selectionMode
+                    ? () => setState(() {
+                          if (selectedAccountIds.contains(id)) {
+                            selectedAccountIds.remove(id);
+                          } else {
+                            selectedAccountIds.add(id);
+                          }
+                        })
+                    : null,
+                trailing: selectionMode
+                    ? const Icon(Icons.drag_handle)
+                    : widget.canEdit
+                    ? PopupMenuButton<String>(
+                        onSelected: (action) async {
+                          if (action == 'edit') {
+                            await showAccountDialog(context, widget.api, widget.refresh, account: a);
+                          } else if (action == 'delete') {
+                            await deleteAccount(context, widget.api, widget.refresh, a);
+                          }
+                        },
+                        itemBuilder: (context) => const [
+                          PopupMenuItem(value: 'edit', child: Text('Edit account')),
+                          PopupMenuItem(value: 'delete', child: Text('Delete account')),
+                        ],
+                      )
+                    : Text(money(a['balance']), style: const TextStyle(fontWeight: FontWeight.w800)),
+                      );
+                    },
+                  ),
           ),
         ],
       ),
     );
+  }
+
+  Future<void> _deleteSelected(List<Map<String, dynamic>> accounts) async {
+    final count = selectedAccountIds.length;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete Accounts'),
+        content: Text('Delete $count selected zero-balance account${count == 1 ? '' : 's'}? Cash-flow logs are kept. Accounts with balances or assigned chunks cannot be deleted.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Delete')),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      for (final id in selectedAccountIds.toList()) {
+        await widget.api.delete('/api/accounts/$id');
+      }
+      setState(() {
+        selectedAccountIds.clear();
+        selectionMode = false;
+      });
+      widget.refresh();
+      if (mounted) toast(context, 'Accounts deleted');
+    } catch (error) {
+      if (mounted) toast(context, error.toString());
+    }
+  }
+
+  Future<void> _reorderAccounts(List<Map<String, dynamic>> accounts, int oldIndex, int newIndex) async {
+    if (newIndex > oldIndex) newIndex -= 1;
+    final reordered = [...accounts];
+    final item = reordered.removeAt(oldIndex);
+    reordered.insert(newIndex, item);
+    try {
+      await widget.api.put('/api/accounts/reorder', {
+        'account_ids': reordered.map((account) => account['id']).toList(),
+      });
+      widget.refresh();
+    } catch (error) {
+      if (mounted) toast(context, error.toString());
+    }
+  }
+
+  Future<void> _moveChunks(List<Map<String, dynamic>> accounts) async {
+    if (selectedAccountIds.length != 1) {
+      toast(context, 'Select one source account to move chunks');
+      return;
+    }
+    final sourceId = selectedAccountIds.first;
+    final destinations = accounts.where((account) => account['id'] != sourceId).toList();
+    if (destinations.isEmpty) {
+      toast(context, 'Create another account first');
+      return;
+    }
+    var destinationId = destinations.first['id'] as int;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setState) => AlertDialog(
+          title: const Text('Move Chunks'),
+          content: _DropdownField<int>(
+            label: 'Destination account',
+            value: destinationId,
+            values: destinations.map((a) => a['id'] as int).toList(),
+            labelFor: (id) => destinations.firstWhere((a) => a['id'] == id)['name'].toString(),
+            onChanged: (value) => setState(() => destinationId = value ?? destinationId),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+            FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Move')),
+          ],
+        ),
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      await widget.api.post('/api/accounts/$sourceId/move-chunks', {'destination_account_id': destinationId});
+      setState(() {
+        selectedAccountIds.clear();
+        selectionMode = false;
+      });
+      widget.refresh();
+      if (mounted) toast(context, 'Chunks moved');
+    } catch (error) {
+      if (mounted) toast(context, error.toString());
+    }
   }
 }
 
@@ -971,6 +1360,7 @@ class _AccountCreateCardState extends State<_AccountCreateCard> {
   final name = TextEditingController();
   final balance = TextEditingController(text: '0');
   var type = 'checking';
+  var sourceMode = 'manual';
   var saving = false;
 
   @override
@@ -987,6 +1377,14 @@ class _AccountCreateCardState extends State<_AccountCreateCard> {
             const SizedBox(height: 12),
             _DropdownField(label: 'Type', value: type, values: const ['checking', 'savings', 'cash', 'other'], onChanged: (v) => setState(() => type = v ?? type)),
             const SizedBox(height: 12),
+            _DropdownField(
+              label: 'Balance management',
+              value: sourceMode,
+              values: const ['manual', 'bank_connected'],
+              labelFor: (value) => value == 'manual' ? 'Manual' : 'Bank connected',
+              onChanged: (v) => setState(() => sourceMode = v ?? sourceMode),
+            ),
+            const SizedBox(height: 12),
             _MoneyField(label: 'Starting balance', controller: balance),
             const SizedBox(height: 12),
             _SubmitButton(saving: saving, label: 'Add Account', onPressed: _save),
@@ -1002,6 +1400,7 @@ class _AccountCreateCardState extends State<_AccountCreateCard> {
       await widget.api.post('/api/accounts', {
         'name': name.text,
         'type': type,
+        'source_mode': sourceMode,
         'balance': parseMoney(balance.text),
         'is_active': true,
       });
@@ -1132,6 +1531,7 @@ class TransfersScreen extends StatefulWidget {
 }
 
 class _TransfersScreenState extends State<TransfersScreen> {
+  var movementType = 'allocation';
   var sourceType = 'unallocated';
   var destinationType = 'chunk';
   int? sourceId;
@@ -1143,27 +1543,49 @@ class _TransfersScreenState extends State<TransfersScreen> {
   @override
   Widget build(BuildContext context) {
     final accounts = listOfMaps(widget.data['accounts']);
+    final manualAccounts = accounts.where((account) => account['source_mode'] != 'bank_connected').toList();
     final chunks = listOfMaps(widget.data['chunks']);
-    sourceId ??= sourceType == 'chunk' && chunks.isNotEmpty ? chunks.first['id'] as int : accounts.isNotEmpty ? accounts.first['id'] as int : null;
-    destinationId ??= destinationType == 'chunk' && chunks.isNotEmpty ? chunks.first['id'] as int : accounts.isNotEmpty ? accounts.first['id'] as int : null;
+    final selectableAccounts = movementType == 'manual_account_transfer' ? manualAccounts : accounts;
+    sourceId ??= sourceType == 'chunk' && chunks.isNotEmpty ? chunks.first['id'] as int : selectableAccounts.isNotEmpty ? selectableAccounts.first['id'] as int : null;
+    destinationId ??= destinationType == 'chunk' && chunks.isNotEmpty ? chunks.first['id'] as int : selectableAccounts.isNotEmpty ? selectableAccounts.first['id'] as int : null;
 
     return _Page(
       title: 'Transfers',
       child: ListView(
         padding: EdgeInsets.all(MediaQuery.sizeOf(context).width < 600 ? 14 : 20),
         children: [
+          const _Notice('Transfers move money between tracked accounts, unallocated balances, and chunks. Transactions record money entering or leaving an account from an outside source.'),
+          const SizedBox(height: 14),
           _FormCard(
             children: [
-              _DropdownField(label: 'From', value: sourceType, values: const ['chunk', 'unallocated'], onChanged: (v) => setState(() { sourceType = v ?? sourceType; sourceId = null; })),
-              _EntityDropdown(label: 'Source', type: sourceType, id: sourceId, accounts: accounts, chunks: chunks, onChanged: (v) => setState(() => sourceId = v)),
               _DropdownField(
-                label: 'To',
-                value: destinationType,
-                values: const ['chunk', 'account', 'unallocated', 'outside_account'],
-                labelFor: movementLabel,
-                onChanged: (v) => setState(() { destinationType = v ?? destinationType; destinationId = null; }),
+                label: 'Transfer type',
+                value: movementType,
+                values: const ['allocation', 'manual_account_transfer'],
+                labelFor: (value) => value == 'allocation' ? 'Allocation transfer' : 'Manual account transfer',
+                onChanged: (v) => setState(() {
+                  movementType = v ?? movementType;
+                  sourceType = 'unallocated';
+                  destinationType = movementType == 'manual_account_transfer' ? 'unallocated' : 'chunk';
+                  sourceId = null;
+                  destinationId = null;
+                }),
               ),
-              if (destinationType != 'outside_account') _EntityDropdown(label: 'Destination', type: destinationType == 'chunk' ? 'chunk' : 'unallocated', id: destinationId, accounts: accounts, chunks: chunks, onChanged: (v) => setState(() => destinationId = v)),
+              if (movementType == 'manual_account_transfer') ...[
+                _EntityDropdown(label: 'From manual account', type: 'unallocated', id: sourceId, accounts: manualAccounts, chunks: chunks, onChanged: (v) => setState(() => sourceId = v)),
+                _EntityDropdown(label: 'To manual account', type: 'unallocated', id: destinationId, accounts: manualAccounts, chunks: chunks, onChanged: (v) => setState(() => destinationId = v)),
+              ] else ...[
+                _DropdownField(label: 'From', value: sourceType, values: const ['chunk', 'unallocated'], onChanged: (v) => setState(() { sourceType = v ?? sourceType; sourceId = null; })),
+                _EntityDropdown(label: 'Source', type: sourceType, id: sourceId, accounts: accounts, chunks: chunks, onChanged: (v) => setState(() => sourceId = v)),
+                _DropdownField(
+                  label: 'To',
+                  value: destinationType,
+                  values: const ['chunk', 'unallocated', 'outside_account'],
+                  labelFor: movementLabel,
+                  onChanged: (v) => setState(() { destinationType = v ?? destinationType; destinationId = null; }),
+                ),
+                if (destinationType != 'outside_account') _EntityDropdown(label: 'Destination', type: destinationType == 'chunk' ? 'chunk' : 'unallocated', id: destinationId, accounts: accounts, chunks: chunks, onChanged: (v) => setState(() => destinationId = v)),
+              ],
               _MoneyField(label: 'Amount', controller: amount),
               TextField(controller: note, decoration: const InputDecoration(labelText: 'Note')),
               _SubmitButton(saving: saving, label: 'Log Movement', onPressed: !widget.canEdit || sourceId == null ? null : _save),
@@ -1186,6 +1608,7 @@ class _TransfersScreenState extends State<TransfersScreen> {
     setState(() => saving = true);
     try {
       await widget.api.post('/api/money-movements', {
+        'movement_type': movementType,
         'source_type': sourceType,
         'source_id': sourceId,
         'destination_type': destinationType,
@@ -1235,6 +1658,8 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
       child: ListView(
         padding: EdgeInsets.all(MediaQuery.sizeOf(context).width < 600 ? 14 : 20),
         children: [
+          const _Notice('Transactions record money entering or leaving an account from outside the budget, such as purchases, deposits, fees, or income. Transfers move existing money between tracked locations.'),
+          const SizedBox(height: 14),
           _FormCard(
             children: [
               _DropdownField<int>(
@@ -1751,21 +2176,31 @@ class _ErrorView extends StatelessWidget {
   }
 }
 
-Future<void> showAccountDialog(BuildContext context, BudgetApi api, VoidCallback refresh) async {
-  final name = TextEditingController();
-  final balance = TextEditingController(text: '0');
-  var type = 'checking';
+Future<void> showAccountDialog(BuildContext context, BudgetApi api, VoidCallback refresh, {Map<String, dynamic>? account}) async {
+  final name = TextEditingController(text: account?['name']?.toString() ?? '');
+  final balance = TextEditingController(text: account?['balance']?.toString() ?? '0');
+  var type = account?['type']?.toString() ?? 'checking';
+  var sourceMode = account?['source_mode']?.toString() ?? 'manual';
+  final isEditing = account != null;
   await showDialog<void>(
     context: context,
     builder: (context) => StatefulBuilder(
       builder: (context, setState) => AlertDialog(
-        title: const Text('New Account'),
+        title: Text(isEditing ? 'Edit Account' : 'New Account'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             TextField(controller: name, decoration: const InputDecoration(labelText: 'Name')),
             const SizedBox(height: 12),
             _DropdownField(label: 'Type', value: type, values: const ['checking', 'savings', 'cash', 'other'], onChanged: (v) => setState(() => type = v ?? type)),
+            const SizedBox(height: 12),
+            _DropdownField(
+              label: 'Balance management',
+              value: sourceMode,
+              values: const ['manual', 'bank_connected'],
+              labelFor: (value) => value == 'manual' ? 'Manual' : 'Bank connected',
+              onChanged: (v) => setState(() => sourceMode = v ?? sourceMode),
+            ),
             const SizedBox(height: 12),
             _MoneyField(label: 'Balance', controller: balance),
           ],
@@ -1774,16 +2209,49 @@ Future<void> showAccountDialog(BuildContext context, BudgetApi api, VoidCallback
           TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
           FilledButton(
             onPressed: () async {
-              await api.post('/api/accounts', {'name': name.text, 'type': type, 'balance': parseMoney(balance.text), 'is_active': true});
+              final payload = {
+                'name': name.text,
+                'type': type,
+                'source_mode': sourceMode,
+                'balance': parseMoney(balance.text),
+                'is_active': account?['is_active'] ?? true,
+              };
+              if (isEditing) {
+                await api.put('/api/accounts/${account['id']}', payload);
+              } else {
+                await api.post('/api/accounts', payload);
+              }
               refresh();
               if (context.mounted) Navigator.pop(context);
             },
-            child: const Text('Create'),
+            child: Text(isEditing ? 'Save' : 'Create'),
           ),
         ],
       ),
     ),
   );
+}
+
+Future<void> deleteAccount(BuildContext context, BudgetApi api, VoidCallback refresh, Map<String, dynamic> account) async {
+  final confirmed = await showDialog<bool>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: const Text('Delete Account'),
+      content: Text('Delete ${account['name']}? Accounts with chunks or activity cannot be deleted.'),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+        FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Delete')),
+      ],
+    ),
+  );
+  if (confirmed != true || !context.mounted) return;
+  try {
+    await api.delete('/api/accounts/${account['id']}');
+    refresh();
+    if (context.mounted) toast(context, 'Account deleted');
+  } catch (error) {
+    if (context.mounted) toast(context, error.toString());
+  }
 }
 
 Future<void> showChunkDialog(BuildContext context, BudgetApi api, VoidCallback refresh, List<Map<String, dynamic>> accounts) async {
@@ -1841,7 +2309,8 @@ List<Map<String, dynamic>> listOfMaps(dynamic value) {
 }
 
 double parseMoney(String value) {
-  return double.tryParse(value.replaceAll(',', '').trim()) ?? 0;
+  final normalized = value.replaceAll(',', '').replaceAll(r'$', '').replaceAll('(', '-').replaceAll(')', '').trim();
+  return double.tryParse(normalized) ?? 0;
 }
 
 String movementLabel(String value) {
@@ -1853,7 +2322,9 @@ String movementLabel(String value) {
 
 String money(dynamic value) {
   final number = value is num ? value : num.tryParse(value?.toString() ?? '') ?? 0;
-  return '\$${number.toStringAsFixed(2)}';
+  if (number == 0) return r'$ -';
+  final formatted = NumberFormat('#,##0.00', 'en_US').format(number.abs());
+  return number < 0 ? '\$ ($formatted)' : '\$ $formatted';
 }
 
 void toast(BuildContext context, String message) {

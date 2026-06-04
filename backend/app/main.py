@@ -66,6 +66,7 @@ class AccountIn(BaseModel):
     name: str = Field(min_length=1)
     balance: float = 0
     type: str = "checking"
+    source_mode: Literal["manual", "bank_connected"] = "manual"
     is_active: bool = True
 
 
@@ -80,9 +81,28 @@ class LoginIn(BaseModel):
     password: str = Field(min_length=8)
 
 
+class RegisterIn(BaseModel):
+    email: str = Field(min_length=3)
+    display_name: str = Field(default="", max_length=120)
+    password: str = Field(min_length=8)
+
+
 class BudgetProfileIn(BaseModel):
     name: str = Field(min_length=1)
     owner_user_id: int
+
+
+class ReorderProfilesIn(BaseModel):
+    user_id: int
+    profile_ids: list[int]
+
+
+class MoveAccountChunksIn(BaseModel):
+    destination_account_id: int
+
+
+class ReorderAccountsIn(BaseModel):
+    account_ids: list[int]
 
 
 class InvitationIn(BaseModel):
@@ -117,6 +137,7 @@ class AddPaycheckIn(BaseModel):
 
 
 class MoneyMovementIn(BaseModel):
+    movement_type: Literal["allocation", "manual_account_transfer"] = "allocation"
     source_type: Literal["chunk", "unallocated", "paycheck"]
     source_id: int | None = None
     destination_type: Literal["chunk", "account", "unallocated", "outside_account"]
@@ -153,6 +174,7 @@ def init_db() -> None:
                 display_name TEXT NOT NULL DEFAULT '',
                 password_salt TEXT,
                 password_hash TEXT,
+                email_verified INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL
             );
 
@@ -169,6 +191,7 @@ def init_db() -> None:
                 user_id INTEGER NOT NULL REFERENCES users(id),
                 profile_id INTEGER NOT NULL REFERENCES budget_profiles(id),
                 role TEXT NOT NULL CHECK (role IN ('admin', 'read_only')),
+                sort_order INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 UNIQUE(user_id, profile_id)
             );
@@ -190,8 +213,10 @@ def init_db() -> None:
                 profile_id INTEGER NOT NULL DEFAULT 1 REFERENCES budget_profiles(id),
                 name TEXT NOT NULL,
                 type TEXT NOT NULL DEFAULT 'checking',
+                source_mode TEXT NOT NULL DEFAULT 'manual',
                 balance REAL NOT NULL DEFAULT 0,
                 is_active INTEGER NOT NULL DEFAULT 1,
+                sort_order INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -240,6 +265,7 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS money_movements (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 profile_id INTEGER NOT NULL DEFAULT 1 REFERENCES budget_profiles(id),
+                movement_type TEXT NOT NULL DEFAULT 'allocation',
                 source_type TEXT NOT NULL,
                 source_id INTEGER,
                 destination_type TEXT NOT NULL,
@@ -284,6 +310,16 @@ def migrate_db(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE users ADD COLUMN password_salt TEXT")
     if not column_exists(conn, "users", "password_hash"):
         conn.execute("ALTER TABLE users ADD COLUMN password_hash TEXT")
+    if not column_exists(conn, "users", "email_verified"):
+        conn.execute("ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0")
+    if not column_exists(conn, "accounts", "source_mode"):
+        conn.execute("ALTER TABLE accounts ADD COLUMN source_mode TEXT NOT NULL DEFAULT 'manual'")
+    if not column_exists(conn, "accounts", "sort_order"):
+        conn.execute("ALTER TABLE accounts ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0")
+    if not column_exists(conn, "user_profile_access", "sort_order"):
+        conn.execute("ALTER TABLE user_profile_access ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0")
+    if not column_exists(conn, "money_movements", "movement_type"):
+        conn.execute("ALTER TABLE money_movements ADD COLUMN movement_type TEXT NOT NULL DEFAULT 'allocation'")
 
     existing_user = conn.execute("SELECT * FROM users ORDER BY id LIMIT 1").fetchone()
     if existing_user is None:
@@ -363,7 +399,8 @@ def require_profile_admin(conn: sqlite3.Connection, profile_id: int, user_id: in
         raise HTTPException(status_code=403, detail="Admin access is required for this budget profile")
 
 
-def account_summaries(conn: sqlite3.Connection, profile_id: int = 1) -> list[dict[str, Any]]:
+def account_summaries(conn: sqlite3.Connection, profile_id: int = 1, include_inactive: bool = False) -> list[dict[str, Any]]:
+    active_filter = "" if include_inactive else "AND a.is_active = 1"
     rows = conn.execute(
         """
         SELECT
@@ -371,10 +408,10 @@ def account_summaries(conn: sqlite3.Connection, profile_id: int = 1) -> list[dic
             COALESCE(SUM(CASE WHEN c.is_active = 1 THEN c.balance ELSE 0 END), 0) AS allocated_balance
         FROM accounts a
         LEFT JOIN budget_chunks c ON c.account_id = a.id AND c.profile_id = a.profile_id
-        WHERE a.profile_id = ?
+        WHERE a.profile_id = ? {active_filter}
         GROUP BY a.id
-        ORDER BY a.name
-        """,
+        ORDER BY a.sort_order, a.name
+        """.format(active_filter=active_filter),
         (profile_id,),
     ).fetchall()
     summaries = []
@@ -398,7 +435,7 @@ def health() -> dict[str, str]:
 @app.get("/api/users")
 def list_users() -> list[dict[str, Any]]:
     with db() as conn:
-        return rows_to_dicts(conn.execute("SELECT id, email, display_name, created_at FROM users ORDER BY email").fetchall())
+        return rows_to_dicts(conn.execute("SELECT id, email, display_name, email_verified, created_at FROM users ORDER BY email").fetchall())
 
 
 @app.post("/api/users")
@@ -413,7 +450,7 @@ def create_user(payload: UserIn) -> dict[str, Any]:
                     "UPDATE users SET display_name = ?, password_salt = ?, password_hash = ? WHERE id = ?",
                     (payload.display_name, salt, password_hash, existing["id"]),
                 )
-            return row_to_dict(conn.execute("SELECT id, email, display_name, created_at FROM users WHERE id = ?", (existing["id"],)).fetchone())
+            return row_to_dict(conn.execute("SELECT id, email, display_name, email_verified, created_at FROM users WHERE id = ?", (existing["id"],)).fetchone())
         password_salt = None
         password_hash = None
         if payload.password:
@@ -425,7 +462,30 @@ def create_user(payload: UserIn) -> dict[str, Any]:
             """,
             (payload.email, payload.display_name, password_salt, password_hash, stamp),
         )
-        return row_to_dict(conn.execute("SELECT id, email, display_name, created_at FROM users WHERE id = ?", (cursor.lastrowid,)).fetchone())
+        return row_to_dict(conn.execute("SELECT id, email, display_name, email_verified, created_at FROM users WHERE id = ?", (cursor.lastrowid,)).fetchone())
+
+
+@app.post("/api/register")
+def register(payload: RegisterIn) -> dict[str, Any]:
+    stamp = now()
+    with db() as conn:
+        existing = conn.execute("SELECT id FROM users WHERE lower(email) = lower(?)", (payload.email,)).fetchone()
+        if existing:
+            raise HTTPException(status_code=409, detail="An account with this email already exists")
+        salt, password_hash = hash_password(payload.password)
+        cursor = conn.execute(
+            """
+            INSERT INTO users (email, display_name, password_salt, password_hash, email_verified, created_at)
+            VALUES (?, ?, ?, ?, 0, ?)
+            """,
+            (payload.email, payload.display_name, salt, password_hash, stamp),
+        )
+        return row_to_dict(
+            conn.execute(
+                "SELECT id, email, display_name, email_verified, created_at FROM users WHERE id = ?",
+                (cursor.lastrowid,),
+            ).fetchone()
+        )
 
 
 @app.post("/api/login")
@@ -434,25 +494,17 @@ def login(payload: LoginIn) -> dict[str, Any]:
     with db() as conn:
         user = conn.execute("SELECT * FROM users WHERE lower(email) = lower(?)", (payload.email,)).fetchone()
         if user is None:
-            salt, password_hash = hash_password(payload.password)
-            cursor = conn.execute(
-                """
-                INSERT INTO users (email, display_name, password_salt, password_hash, created_at)
-                VALUES (?, '', ?, ?, ?)
-                """,
-                (payload.email, salt, password_hash, stamp),
-            )
-            return row_to_dict(conn.execute("SELECT id, email, display_name, created_at FROM users WHERE id = ?", (cursor.lastrowid,)).fetchone())
+            raise HTTPException(status_code=401, detail="Invalid email or password")
         if not user["password_salt"] or not user["password_hash"]:
             salt, password_hash = hash_password(payload.password)
             conn.execute(
                 "UPDATE users SET password_salt = ?, password_hash = ? WHERE id = ?",
                 (salt, password_hash, user["id"]),
             )
-            return row_to_dict(conn.execute("SELECT id, email, display_name, created_at FROM users WHERE id = ?", (user["id"],)).fetchone())
+            return row_to_dict(conn.execute("SELECT id, email, display_name, email_verified, created_at FROM users WHERE id = ?", (user["id"],)).fetchone())
         if not verify_password(payload.password, user["password_salt"], user["password_hash"]):
             raise HTTPException(status_code=401, detail="Invalid email or password")
-        return row_to_dict(conn.execute("SELECT id, email, display_name, created_at FROM users WHERE id = ?", (user["id"],)).fetchone())
+        return row_to_dict(conn.execute("SELECT id, email, display_name, email_verified, created_at FROM users WHERE id = ?", (user["id"],)).fetchone())
 
 
 @app.get("/api/budget-profiles")
@@ -463,11 +515,11 @@ def list_budget_profiles(user_id: int | None = None) -> list[dict[str, Any]]:
         return rows_to_dicts(
             conn.execute(
                 """
-                SELECT p.*, a.role
+                SELECT p.*, a.role, a.sort_order
                 FROM budget_profiles p
                 JOIN user_profile_access a ON a.profile_id = p.id
                 WHERE a.user_id = ?
-                ORDER BY p.name
+                ORDER BY a.sort_order, p.name
                 """,
                 (user_id,),
             ).fetchall()
@@ -497,6 +549,41 @@ def create_budget_profile(payload: BudgetProfileIn) -> dict[str, Any]:
             (payload.owner_user_id, profile_id, stamp),
         )
         return row_to_dict(conn.execute("SELECT * FROM budget_profiles WHERE id = ?", (profile_id,)).fetchone())
+
+
+@app.put("/api/budget-profiles/reorder")
+def reorder_budget_profiles(payload: ReorderProfilesIn) -> dict[str, bool]:
+    with db() as conn:
+        for index, profile_id in enumerate(payload.profile_ids):
+            conn.execute(
+                """
+                UPDATE user_profile_access
+                SET sort_order = ?
+                WHERE user_id = ? AND profile_id = ?
+                """,
+                (index, payload.user_id, profile_id),
+            )
+        return {"updated": True}
+
+
+@app.delete("/api/budget-profiles/{profile_id}")
+def delete_budget_profile(profile_id: int) -> dict[str, bool]:
+    with db() as conn:
+        get_profile_or_404(conn, profile_id)
+        paycheck_ids = [row["id"] for row in conn.execute("SELECT id FROM paychecks WHERE profile_id = ?", (profile_id,)).fetchall()]
+        if paycheck_ids:
+            placeholders = ",".join("?" for _ in paycheck_ids)
+            conn.execute(f"DELETE FROM paycheck_allocations WHERE paycheck_id IN ({placeholders})", paycheck_ids)
+        conn.execute("DELETE FROM transactions WHERE profile_id = ?", (profile_id,))
+        conn.execute("DELETE FROM money_movements WHERE profile_id = ?", (profile_id,))
+        conn.execute("DELETE FROM paychecks WHERE profile_id = ?", (profile_id,))
+        conn.execute("DELETE FROM paycheck_profiles WHERE profile_id = ?", (profile_id,))
+        conn.execute("DELETE FROM budget_chunks WHERE profile_id = ?", (profile_id,))
+        conn.execute("DELETE FROM accounts WHERE profile_id = ?", (profile_id,))
+        conn.execute("DELETE FROM profile_invitations WHERE profile_id = ?", (profile_id,))
+        conn.execute("DELETE FROM user_profile_access WHERE profile_id = ?", (profile_id,))
+        conn.execute("DELETE FROM budget_profiles WHERE id = ?", (profile_id,))
+        return {"deleted": True}
 
 
 @app.get("/api/budget-profiles/{profile_id}/members")
@@ -641,12 +728,24 @@ def create_account(payload: AccountIn, profile_id: int = 1) -> dict[str, Any]:
         get_profile_or_404(conn, profile_id)
         cursor = conn.execute(
             """
-            INSERT INTO accounts (profile_id, name, type, balance, is_active, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO accounts (profile_id, name, type, source_mode, balance, is_active, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (profile_id, payload.name, payload.type, payload.balance, int(payload.is_active), stamp, stamp),
+            (profile_id, payload.name, payload.type, payload.source_mode, payload.balance, int(payload.is_active), stamp, stamp),
         )
         return next(a for a in account_summaries(conn, profile_id) if a["id"] == cursor.lastrowid)
+
+
+@app.put("/api/accounts/reorder")
+def reorder_accounts(payload: ReorderAccountsIn, profile_id: int = 1) -> dict[str, bool]:
+    with db() as conn:
+        get_profile_or_404(conn, profile_id)
+        for index, account_id in enumerate(payload.account_ids):
+            conn.execute(
+                "UPDATE accounts SET sort_order = ? WHERE id = ? AND profile_id = ?",
+                (index, account_id, profile_id),
+            )
+        return {"updated": True}
 
 
 @app.put("/api/accounts/{account_id}")
@@ -658,12 +757,46 @@ def update_account(account_id: int, payload: AccountIn, profile_id: int = 1) -> 
         conn.execute(
             """
             UPDATE accounts
-            SET name = ?, type = ?, balance = ?, is_active = ?, updated_at = ?
+            SET name = ?, type = ?, source_mode = ?, balance = ?, is_active = ?, updated_at = ?
             WHERE id = ?
             """,
-            (payload.name, payload.type, payload.balance, int(payload.is_active), now(), account_id),
+            (payload.name, payload.type, payload.source_mode, payload.balance, int(payload.is_active), now(), account_id),
         )
         return next(a for a in account_summaries(conn, profile_id) if a["id"] == account_id)
+
+
+@app.delete("/api/accounts/{account_id}")
+def delete_account(account_id: int, profile_id: int = 1) -> dict[str, bool]:
+    with db() as conn:
+        account = get_account_or_404(conn, account_id)
+        if account["profile_id"] != profile_id:
+            raise HTTPException(status_code=404, detail="Account not found")
+        if account["balance"] != 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Only zero-balance accounts can be deleted",
+            )
+        chunk_count = conn.execute("SELECT COUNT(*) AS count FROM budget_chunks WHERE account_id = ?", (account_id,)).fetchone()["count"]
+        if chunk_count:
+            raise HTTPException(status_code=400, detail="Move this account's chunks before deleting it")
+        conn.execute("UPDATE accounts SET is_active = 0, updated_at = ? WHERE id = ?", (now(), account_id))
+        return {"deleted": True}
+
+
+@app.post("/api/accounts/{account_id}/move-chunks")
+def move_account_chunks(account_id: int, payload: MoveAccountChunksIn, profile_id: int = 1) -> dict[str, int]:
+    with db() as conn:
+        source = get_account_or_404(conn, account_id)
+        destination = get_account_or_404(conn, payload.destination_account_id)
+        if source["profile_id"] != profile_id or destination["profile_id"] != profile_id:
+            raise HTTPException(status_code=404, detail="Account not found")
+        if source["id"] == destination["id"]:
+            raise HTTPException(status_code=400, detail="Destination account must be different")
+        cursor = conn.execute(
+            "UPDATE budget_chunks SET account_id = ?, updated_at = ? WHERE account_id = ? AND profile_id = ?",
+            (payload.destination_account_id, now(), account_id, profile_id),
+        )
+        return {"moved_chunks": cursor.rowcount}
 
 
 @app.get("/api/paycheck-profile")
@@ -898,6 +1031,53 @@ def create_money_movement(payload: MoneyMovementIn, profile_id: int = 1) -> dict
         source_account_id: int | None = None
         destination_id = payload.destination_id
 
+        if payload.movement_type == "manual_account_transfer":
+            if payload.source_type != "unallocated" or payload.destination_type != "unallocated":
+                raise HTTPException(
+                    status_code=400,
+                    detail="Manual account transfers must move account unallocated money to account unallocated money",
+                )
+            if payload.source_id is None or payload.destination_id is None:
+                raise HTTPException(status_code=400, detail="Source and destination accounts are required")
+            if payload.source_id == payload.destination_id:
+                raise HTTPException(status_code=400, detail="Source and destination accounts must be different")
+            source_account = get_account_or_404(conn, payload.source_id)
+            destination_account = get_account_or_404(conn, payload.destination_id)
+            if source_account["profile_id"] != profile_id or destination_account["profile_id"] != profile_id:
+                raise HTTPException(status_code=404, detail="Account not found")
+            if source_account["source_mode"] != "manual" or destination_account["source_mode"] != "manual":
+                raise HTTPException(status_code=400, detail="Only manually managed accounts can initiate software account transfers")
+            source_summary = account_summary(conn, payload.source_id, profile_id)
+            if not source_summary or source_summary["unallocated_balance"] < payload.amount:
+                raise HTTPException(status_code=400, detail="Source account does not have enough unallocated money")
+            conn.execute(
+                "UPDATE accounts SET balance = balance - ?, updated_at = ? WHERE id = ?",
+                (payload.amount, stamp, payload.source_id),
+            )
+            conn.execute(
+                "UPDATE accounts SET balance = balance + ?, updated_at = ? WHERE id = ?",
+                (payload.amount, stamp, payload.destination_id),
+            )
+            cursor = conn.execute(
+                """
+                INSERT INTO money_movements
+                    (profile_id, movement_type, source_type, source_id, destination_type, destination_id, amount, note, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    profile_id,
+                    payload.movement_type,
+                    payload.source_type,
+                    payload.source_id,
+                    payload.destination_type,
+                    payload.destination_id,
+                    payload.amount,
+                    payload.note,
+                    stamp,
+                ),
+            )
+            return row_to_dict(conn.execute("SELECT * FROM money_movements WHERE id = ?", (cursor.lastrowid,)).fetchone())
+
         if payload.source_type == "paycheck":
             raise HTTPException(
                 status_code=400,
@@ -986,11 +1166,12 @@ def create_money_movement(payload: MoneyMovementIn, profile_id: int = 1) -> dict
         cursor = conn.execute(
             """
             INSERT INTO money_movements
-                (profile_id, source_type, source_id, destination_type, destination_id, amount, note, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (profile_id, movement_type, source_type, source_id, destination_type, destination_id, amount, note, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 profile_id,
+                payload.movement_type,
                 payload.source_type,
                 payload.source_id,
                 payload.destination_type,
