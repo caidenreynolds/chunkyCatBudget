@@ -1,5 +1,9 @@
 FROM ghcr.io/cirruslabs/flutter:stable AS frontend-builder
 
+ARG GIT_COMMIT=unknown
+ARG BUILD_TIME=unknown
+ARG BUILD_NUMBER=
+
 WORKDIR /app
 
 COPY pubspec.yaml pubspec.lock /app/
@@ -7,7 +11,14 @@ RUN flutter pub get
 
 COPY lib /app/lib
 COPY web /app/web
-RUN flutter build web --release
+RUN flutter build web --release \
+    && APP_VERSION="$(awk -F': ' '/^version:/ {print $2}' pubspec.yaml)" \
+    && VERSION="${APP_VERSION%%+*}" \
+    && PUBSPEC_BUILD_NUMBER="${APP_VERSION#*+}" \
+    && if [ "$PUBSPEC_BUILD_NUMBER" = "$APP_VERSION" ]; then PUBSPEC_BUILD_NUMBER=""; fi \
+    && EFFECTIVE_BUILD_NUMBER="${BUILD_NUMBER:-$PUBSPEC_BUILD_NUMBER}" \
+    && printf '{\n  "version": "%s",\n  "buildNumber": "%s",\n  "commit": "%s",\n  "buildTime": "%s"\n}\n' \
+        "$VERSION" "$EFFECTIVE_BUILD_NUMBER" "$GIT_COMMIT" "$BUILD_TIME" > /app/build/web/version.json
 
 FROM python:3.12-slim AS app
 

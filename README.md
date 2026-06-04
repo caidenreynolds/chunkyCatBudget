@@ -34,6 +34,7 @@ The Docker image is an all-in-one web app container:
 - Nginx serves the Flutter web build.
 - Nginx proxies `/api/*` to FastAPI inside the container.
 - SQLite persists at `/data/budget.db`.
+- Each Docker build writes `/version.json` with the app version, git commit, build number, and UTC build time.
 
 Local build:
 
@@ -48,6 +49,19 @@ http://localhost:8080
 ```
 
 The local Compose database is stored in the `chunky-cat-budget-data` Docker volume.
+
+## Build Metadata
+
+Every deployed Docker image includes a generated `version.json` file. The login and settings screens show that build information in a small footer so users can confirm which deployed app their browser is running.
+
+GitHub Actions generates this metadata during the container build from:
+
+- `pubspec.yaml` app version
+- Git commit SHA
+- GitHub Actions run number
+- UTC build timestamp
+
+Nginx serves `/`, `/index.html`, `/version.json`, `/flutter_bootstrap.js`, and `/flutter_service_worker.js` with no-cache headers. Versioned Flutter assets may still be cached normally, so users should not need to clear their browser cache after an update.
 
 ## unRAID
 

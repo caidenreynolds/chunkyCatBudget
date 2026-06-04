@@ -104,17 +104,83 @@ class BudgetApi {
   dynamic _decode(http.Response response) {
     final body = response.body.isEmpty ? null : jsonDecode(response.body);
     if (response.statusCode >= 400) {
-      final message = body is Map && body['detail'] != null ? body['detail'].toString() : response.body;
+      final message = _apiErrorMessage(body, response.body);
       throw ApiException(message);
     }
     return body;
+  }
+
+  String _apiErrorMessage(dynamic body, String fallback) {
+    if (body is Map && body['detail'] != null) {
+      final detail = body['detail'];
+      if (detail is String) return detail;
+      if (detail is List && detail.isNotEmpty) {
+        final first = detail.first;
+        if (first is Map && first['msg'] != null) return first['msg'].toString();
+      }
+      return detail.toString();
+    }
+    return fallback.isEmpty ? 'Something went wrong.' : fallback;
   }
 }
 
 class ApiException implements Exception {
   ApiException(this.message);
   final String message;
+
+  @override
+  String toString() => message;
 }
+
+String errorMessage(Object error) {
+  if (error is ApiException) return error.message;
+  return error.toString();
+}
+
+class BuildInfo {
+  const BuildInfo({
+    required this.version,
+    required this.buildNumber,
+    required this.commit,
+    required this.buildTime,
+  });
+
+  final String version;
+  final String buildNumber;
+  final String commit;
+  final String buildTime;
+
+  factory BuildInfo.fromJson(Map<String, dynamic> json) {
+    return BuildInfo(
+      version: json['version']?.toString() ?? 'unknown',
+      buildNumber: json['buildNumber']?.toString() ?? '',
+      commit: json['commit']?.toString() ?? 'unknown',
+      buildTime: json['buildTime']?.toString() ?? 'unknown',
+    );
+  }
+
+  String get shortCommit {
+    if (commit.length <= 7) return commit;
+    return commit.substring(0, 7);
+  }
+
+  String get formattedBuildTime {
+    final parsed = DateTime.tryParse(buildTime);
+    if (parsed == null) return buildTime;
+    return DateFormat('yyyy-MM-dd HH:mm').format(parsed.toUtc());
+  }
+}
+
+Future<BuildInfo> loadBuildInfo() async {
+  final uri = Uri.base.resolve('version.json?v=${DateTime.now().millisecondsSinceEpoch}');
+  final response = await http.get(uri, headers: const {'Cache-Control': 'no-cache'});
+  if (response.statusCode >= 400) {
+    throw ApiException('Build information unavailable');
+  }
+  return BuildInfo.fromJson(Map<String, dynamic>.from(jsonDecode(response.body) as Map));
+}
+
+final Future<BuildInfo> appBuildInfo = loadBuildInfo();
 
 class BudgetHome extends StatefulWidget {
   const BudgetHome({super.key});
@@ -342,6 +408,8 @@ class _LoginScreenState extends State<LoginScreen> {
                       ),
                       const SizedBox(height: 10),
                       TextButton(onPressed: widget.onCreateAccount, child: const Text('Create an account')),
+                      const SizedBox(height: 18),
+                      const BuildInfoText(),
                     ],
                   ),
                 ),
@@ -363,7 +431,8 @@ class _LoginScreenState extends State<LoginScreen> {
       widget.onSignedIn(user);
     } catch (error) {
       if (!mounted) return;
-      toast(context, error.toString());
+      final message = errorMessage(error);
+      toast(context, message == 'Invalid email or password' ? 'Incorrect email or password.' : message);
     } finally {
       if (mounted) setState(() => signingIn = false);
     }
@@ -424,6 +493,8 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                       ),
                       const SizedBox(height: 10),
                       TextButton(onPressed: widget.onSignIn, child: const Text('Back to sign in')),
+                      const SizedBox(height: 18),
+                      const BuildInfoText(),
                     ],
                   ),
                 ),
@@ -450,10 +521,39 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
       widget.onCreated(user);
     } catch (error) {
       if (!mounted) return;
-      toast(context, error.toString());
+      final message = errorMessage(error);
+      toast(
+        context,
+        message == 'An account with this email already exists'
+            ? 'This email is already associated with an account. Sign in instead.'
+            : message,
+      );
     } finally {
       if (mounted) setState(() => creating = false);
     }
+  }
+}
+
+class BuildInfoText extends StatelessWidget {
+  const BuildInfoText({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<BuildInfo>(
+      future: appBuildInfo,
+      builder: (context, snapshot) {
+        final info = snapshot.data;
+        if (info == null) {
+          return const Text('ChunkyCat build loading', textAlign: TextAlign.center, style: TextStyle(color: Color(0xFF98A2B3), fontSize: 12));
+        }
+        final versionSuffix = info.buildNumber.isEmpty ? '' : '+${info.buildNumber}';
+        return Text(
+          'ChunkyCat v${info.version}$versionSuffix\nBuild ${info.shortCommit}\n${info.formattedBuildTime} UTC',
+          textAlign: TextAlign.center,
+          style: const TextStyle(color: Color(0xFF667085), fontSize: 12, height: 1.35),
+        );
+      },
+    );
   }
 }
 
@@ -1813,6 +1913,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 emptyText: 'No invitations yet',
                 children: invitations.map((i) => _ListRow(title: i['email'].toString(), subtitle: '${i['role']}  |  ${i['status']}', trailing: '#${i['id']}')).toList(),
               ),
+              const SizedBox(height: 22),
+              const BuildInfoText(),
             ],
           );
         },
