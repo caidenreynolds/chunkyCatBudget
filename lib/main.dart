@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 
@@ -8,10 +9,7 @@ void main() {
   runApp(const ChunkyCatBudgApp());
 }
 
-const apiBaseUrl = String.fromEnvironment(
-  'API_BASE_URL',
-  defaultValue: '',
-);
+const apiBaseUrl = String.fromEnvironment('API_BASE_URL', defaultValue: '');
 
 class ChunkyCatBudgApp extends StatelessWidget {
   const ChunkyCatBudgApp({super.key});
@@ -38,11 +36,16 @@ class ChunkyCatBudgApp extends StatelessWidget {
           ),
         ),
         inputDecorationTheme: const InputDecorationTheme(
-          border: OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(8))),
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.all(Radius.circular(8)),
+          ),
           isDense: true,
         ),
       ),
-      home: const BudgetHome(),
+      home: FocusTraversalGroup(
+        policy: ReadingOrderTraversalPolicy(),
+        child: const BudgetHome(),
+      ),
     );
   }
 }
@@ -52,13 +55,18 @@ class BudgetApi {
 
   Uri _uri(String path) {
     var resolvedPath = path;
-    if (_usesActiveProfile(path) && activeProfileId != null && !path.contains('profile_id=')) {
-      resolvedPath = '$path${path.contains('?') ? '&' : '?'}profile_id=$activeProfileId';
+    if (_usesActiveProfile(path) &&
+        activeProfileId != null &&
+        !path.contains('profile_id=')) {
+      resolvedPath =
+          '$path${path.contains('?') ? '&' : '?'}profile_id=$activeProfileId';
     }
     if (apiBaseUrl.isNotEmpty) {
       return Uri.parse('$apiBaseUrl$resolvedPath');
     }
-    return Uri.base.resolve(resolvedPath.startsWith('/') ? resolvedPath.substring(1) : resolvedPath);
+    return Uri.base.resolve(
+      resolvedPath.startsWith('/') ? resolvedPath.substring(1) : resolvedPath,
+    );
   }
 
   bool _usesActiveProfile(String path) {
@@ -116,7 +124,9 @@ class BudgetApi {
       if (detail is String) return detail;
       if (detail is List && detail.isNotEmpty) {
         final first = detail.first;
-        if (first is Map && first['msg'] != null) return first['msg'].toString();
+        if (first is Map && first['msg'] != null) {
+          return first['msg'].toString();
+        }
       }
       return detail.toString();
     }
@@ -172,12 +182,19 @@ class BuildInfo {
 }
 
 Future<BuildInfo> loadBuildInfo() async {
-  final uri = Uri.base.resolve('version.json?v=${DateTime.now().millisecondsSinceEpoch}');
-  final response = await http.get(uri, headers: const {'Cache-Control': 'no-cache'});
+  final uri = Uri.base.resolve(
+    'version.json?v=${DateTime.now().millisecondsSinceEpoch}',
+  );
+  final response = await http.get(
+    uri,
+    headers: const {'Cache-Control': 'no-cache'},
+  );
   if (response.statusCode >= 400) {
     throw ApiException('Build information unavailable');
   }
-  return BuildInfo.fromJson(Map<String, dynamic>.from(jsonDecode(response.body) as Map));
+  return BuildInfo.fromJson(
+    Map<String, dynamic>.from(jsonDecode(response.body) as Map),
+  );
 }
 
 final Future<BuildInfo> appBuildInfo = loadBuildInfo();
@@ -265,7 +282,12 @@ class _BudgetHomeState extends State<BudgetHome> {
     }
     final profile = selectedProfile;
     if (profile == null) {
-      return ProfileSelectionScreen(api: api, user: user, onProfileSelected: selectProfile, onSignOut: signOut);
+      return ProfileSelectionScreen(
+        api: api,
+        user: user,
+        onProfileSelected: selectProfile,
+        onSignOut: signOut,
+      );
     }
     final canEdit = profile['role'] == 'admin';
 
@@ -273,7 +295,8 @@ class _BudgetHomeState extends State<BudgetHome> {
       future: summaryFuture,
       builder: (context, snapshot) {
         final data = snapshot.data;
-        final isLoading = snapshot.connectionState == ConnectionState.waiting && data == null;
+        final isLoading =
+            snapshot.connectionState == ConnectionState.waiting && data == null;
         final error = snapshot.error;
         return LayoutBuilder(
           builder: (context, constraints) {
@@ -281,16 +304,16 @@ class _BudgetHomeState extends State<BudgetHome> {
             final child = isLoading
                 ? const Center(child: CircularProgressIndicator())
                 : error != null
-                    ? _ErrorView(message: error.toString(), onRetry: refresh)
-                    : _ScreenHost(
-                        selected: selected,
-                        data: data ?? const {},
-                        api: api,
-                        refresh: refresh,
-                        goTo: openScreen,
-                        canEdit: canEdit,
-                        selectedProfile: profile,
-                      );
+                ? _ErrorView(message: error.toString(), onRetry: refresh)
+                : _ScreenHost(
+                    selected: selected,
+                    data: data ?? const {},
+                    api: api,
+                    refresh: refresh,
+                    goTo: openScreen,
+                    canEdit: canEdit,
+                    selectedProfile: profile,
+                  );
 
             if (isDesktop) {
               return _DesktopShell(
@@ -350,7 +373,12 @@ class _AuthGatewayState extends State<AuthGateway> {
 }
 
 class LoginScreen extends StatefulWidget {
-  const LoginScreen({super.key, required this.api, required this.onSignedIn, required this.onCreateAccount});
+  const LoginScreen({
+    super.key,
+    required this.api,
+    required this.onSignedIn,
+    required this.onCreateAccount,
+  });
   final BudgetApi api;
   final ValueChanged<Map<String, dynamic>> onSignedIn;
   final VoidCallback onCreateAccount;
@@ -380,9 +408,18 @@ class _LoginScreenState extends State<LoginScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      const Text('Chunky Cat Budget', style: TextStyle(fontSize: 26, fontWeight: FontWeight.w900)),
+                      const Text(
+                        'Chunky Cat Budget',
+                        style: TextStyle(
+                          fontSize: 26,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
                       const SizedBox(height: 6),
-                      const Text('Sign in to choose or manage budget profiles.', style: TextStyle(color: Color(0xFF667085))),
+                      const Text(
+                        'Sign in to choose or manage budget profiles.',
+                        style: TextStyle(color: Color(0xFF667085)),
+                      ),
                       const SizedBox(height: 22),
                       TextField(
                         controller: email,
@@ -395,19 +432,31 @@ class _LoginScreenState extends State<LoginScreen> {
                         controller: password,
                         obscureText: true,
                         autofillHints: const [AutofillHints.password],
-                        decoration: const InputDecoration(labelText: 'Password'),
+                        decoration: const InputDecoration(
+                          labelText: 'Password',
+                        ),
                       ),
                       const SizedBox(height: 18),
                       SizedBox(
                         height: 50,
                         child: FilledButton.icon(
                           onPressed: signingIn ? null : _signIn,
-                          icon: signingIn ? const SizedBox.square(dimension: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.login),
+                          icon: signingIn
+                              ? const SizedBox.square(
+                                  dimension: 18,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Icon(Icons.login),
                           label: const Text('Sign In'),
                         ),
                       ),
                       const SizedBox(height: 10),
-                      TextButton(onPressed: widget.onCreateAccount, child: const Text('Create an account')),
+                      TextButton(
+                        onPressed: widget.onCreateAccount,
+                        child: const Text('Create an account'),
+                      ),
                       const SizedBox(height: 18),
                       const BuildInfoText(),
                     ],
@@ -424,15 +473,22 @@ class _LoginScreenState extends State<LoginScreen> {
   Future<void> _signIn() async {
     setState(() => signingIn = true);
     try {
-      final user = Map<String, dynamic>.from(await widget.api.post('/api/login', {
-        'email': email.text.trim(),
-        'password': password.text,
-      }));
+      final user = Map<String, dynamic>.from(
+        await widget.api.post('/api/login', {
+          'email': email.text.trim(),
+          'password': password.text,
+        }),
+      );
       widget.onSignedIn(user);
     } catch (error) {
       if (!mounted) return;
       final message = errorMessage(error);
-      toast(context, message == 'Invalid email or password' ? 'Incorrect email or password.' : message);
+      toast(
+        context,
+        message == 'Invalid email or password'
+            ? 'Incorrect email or password.'
+            : message,
+      );
     } finally {
       if (mounted) setState(() => signingIn = false);
     }
@@ -440,7 +496,12 @@ class _LoginScreenState extends State<LoginScreen> {
 }
 
 class CreateAccountScreen extends StatefulWidget {
-  const CreateAccountScreen({super.key, required this.api, required this.onCreated, required this.onSignIn});
+  const CreateAccountScreen({
+    super.key,
+    required this.api,
+    required this.onCreated,
+    required this.onSignIn,
+  });
   final BudgetApi api;
   final ValueChanged<Map<String, dynamic>> onCreated;
   final VoidCallback onSignIn;
@@ -471,28 +532,68 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      const Text('Create Account', style: TextStyle(fontSize: 26, fontWeight: FontWeight.w900)),
+                      const Text(
+                        'Create Account',
+                        style: TextStyle(
+                          fontSize: 26,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
                       const SizedBox(height: 6),
-                      const Text('Email verification will be enabled when an email provider is configured.', style: TextStyle(color: Color(0xFF667085))),
+                      const Text(
+                        'Email verification will be enabled when an email provider is configured.',
+                        style: TextStyle(color: Color(0xFF667085)),
+                      ),
                       const SizedBox(height: 20),
-                      TextField(controller: displayName, decoration: const InputDecoration(labelText: 'Display name')),
+                      TextField(
+                        controller: displayName,
+                        decoration: const InputDecoration(
+                          labelText: 'Display name',
+                        ),
+                      ),
                       const SizedBox(height: 12),
-                      TextField(controller: email, keyboardType: TextInputType.emailAddress, decoration: const InputDecoration(labelText: 'Email')),
+                      TextField(
+                        controller: email,
+                        keyboardType: TextInputType.emailAddress,
+                        decoration: const InputDecoration(labelText: 'Email'),
+                      ),
                       const SizedBox(height: 12),
-                      TextField(controller: password, obscureText: true, decoration: const InputDecoration(labelText: 'Password')),
+                      TextField(
+                        controller: password,
+                        obscureText: true,
+                        decoration: const InputDecoration(
+                          labelText: 'Password',
+                        ),
+                      ),
                       const SizedBox(height: 12),
-                      TextField(controller: confirmPassword, obscureText: true, decoration: const InputDecoration(labelText: 'Confirm password')),
+                      TextField(
+                        controller: confirmPassword,
+                        obscureText: true,
+                        decoration: const InputDecoration(
+                          labelText: 'Confirm password',
+                        ),
+                      ),
                       const SizedBox(height: 18),
                       SizedBox(
                         height: 50,
                         child: FilledButton.icon(
                           onPressed: creating ? null : _create,
-                          icon: creating ? const SizedBox.square(dimension: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.person_add),
+                          icon: creating
+                              ? const SizedBox.square(
+                                  dimension: 18,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Icon(Icons.person_add),
                           label: const Text('Create Account'),
                         ),
                       ),
                       const SizedBox(height: 10),
-                      TextButton(onPressed: widget.onSignIn, child: const Text('Back to sign in')),
+                      TextButton(
+                        onPressed: widget.onSignIn,
+                        child: const Text('Back to sign in'),
+                      ),
                       const SizedBox(height: 18),
                       const BuildInfoText(),
                     ],
@@ -513,11 +614,13 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
     }
     setState(() => creating = true);
     try {
-      final user = Map<String, dynamic>.from(await widget.api.post('/api/register', {
-        'email': email.text.trim(),
-        'display_name': displayName.text.trim(),
-        'password': password.text,
-      }));
+      final user = Map<String, dynamic>.from(
+        await widget.api.post('/api/register', {
+          'email': email.text.trim(),
+          'display_name': displayName.text.trim(),
+          'password': password.text,
+        }),
+      );
       widget.onCreated(user);
     } catch (error) {
       if (!mounted) return;
@@ -544,13 +647,23 @@ class BuildInfoText extends StatelessWidget {
       builder: (context, snapshot) {
         final info = snapshot.data;
         if (info == null) {
-          return const Text('ChunkyCat build loading', textAlign: TextAlign.center, style: TextStyle(color: Color(0xFF98A2B3), fontSize: 12));
+          return const Text(
+            'ChunkyCat build loading',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Color(0xFF98A2B3), fontSize: 12),
+          );
         }
-        final versionSuffix = info.buildNumber.isEmpty ? '' : '+${info.buildNumber}';
+        final versionSuffix = info.buildNumber.isEmpty
+            ? ''
+            : '+${info.buildNumber}';
         return Text(
           'ChunkyCat v${info.version}$versionSuffix\nBuild ${info.shortCommit}\n${info.formattedBuildTime} UTC',
           textAlign: TextAlign.center,
-          style: const TextStyle(color: Color(0xFF667085), fontSize: 12, height: 1.35),
+          style: const TextStyle(
+            color: Color(0xFF667085),
+            fontSize: 12,
+            height: 1.35,
+          ),
         );
       },
     );
@@ -576,7 +689,8 @@ class ProfileSelectionScreen extends StatefulWidget {
 }
 
 class _ProfileSelectionScreenState extends State<ProfileSelectionScreen> {
-  late Future<Map<String, List<Map<String, dynamic>>>> profileData = _loadProfileData();
+  late Future<Map<String, List<Map<String, dynamic>>>> profileData =
+      _loadProfileData();
   final profileName = TextEditingController();
   final selectedProfileIds = <int>{};
   var creating = false;
@@ -584,10 +698,14 @@ class _ProfileSelectionScreenState extends State<ProfileSelectionScreen> {
   var selectionMode = false;
 
   Future<Map<String, List<Map<String, dynamic>>>> _loadProfileData() async {
-    final profiles = listOfMaps(await widget.api.get('/api/budget-profiles?user_id=${widget.user['id']}'));
-    final invitations = listOfMaps(await widget.api.get('/api/invitations?email=${Uri.encodeComponent(widget.user['email'].toString())}'))
-        .where((invitation) => invitation['status'] == 'pending')
-        .toList();
+    final profiles = listOfMaps(
+      await widget.api.get('/api/budget-profiles?user_id=${widget.user['id']}'),
+    );
+    final invitations = listOfMaps(
+      await widget.api.get(
+        '/api/invitations?email=${Uri.encodeComponent(widget.user['email'].toString())}',
+      ),
+    ).where((invitation) => invitation['status'] == 'pending').toList();
     return {'profiles': profiles, 'invitations': invitations};
   }
 
@@ -612,11 +730,17 @@ class _ProfileSelectionScreenState extends State<ProfileSelectionScreen> {
           ),
           if (selectionMode)
             IconButton(
-              onPressed: selectedProfileIds.isEmpty ? null : _deleteSelectedProfiles,
+              onPressed: selectedProfileIds.isEmpty
+                  ? null
+                  : _deleteSelectedProfiles,
               tooltip: 'Delete selected profiles',
               icon: const Icon(Icons.delete_outline),
             ),
-          IconButton(onPressed: widget.onSignOut, tooltip: 'Sign out', icon: const Icon(Icons.logout)),
+          IconButton(
+            onPressed: widget.onSignOut,
+            tooltip: 'Sign out',
+            icon: const Icon(Icons.logout),
+          ),
         ],
       ),
       body: SafeArea(
@@ -628,20 +752,29 @@ class _ProfileSelectionScreenState extends State<ProfileSelectionScreen> {
             return ListView(
               padding: EdgeInsets.all(isPhone ? 14 : 22),
               children: [
-                Text(widget.user['email']?.toString() ?? '', style: const TextStyle(fontWeight: FontWeight.w800)),
+                Text(
+                  widget.user['email']?.toString() ?? '',
+                  style: const TextStyle(fontWeight: FontWeight.w800),
+                ),
                 const SizedBox(height: 14),
                 _SectionTitle('Profiles You Can Access'),
                 Card(
                   child: rows.isEmpty
                       ? Padding(
                           padding: const EdgeInsets.all(18),
-                          child: Text(snapshot.connectionState == ConnectionState.waiting ? 'Loading profiles' : 'No profiles yet', style: const TextStyle(color: Color(0xFF667085))),
+                          child: Text(
+                            snapshot.connectionState == ConnectionState.waiting
+                                ? 'Loading profiles'
+                                : 'No profiles yet',
+                            style: const TextStyle(color: Color(0xFF667085)),
+                          ),
                         )
                       : ReorderableListView.builder(
                           shrinkWrap: true,
                           physics: const NeverScrollableScrollPhysics(),
                           itemCount: rows.length,
-                          onReorder: (oldIndex, newIndex) => _reorderProfiles(rows, oldIndex, newIndex),
+                          onReorder: (oldIndex, newIndex) =>
+                              _reorderProfiles(rows, oldIndex, newIndex),
                           itemBuilder: (context, index) {
                             final profile = rows[index];
                             final id = profile['id'] as int;
@@ -659,18 +792,31 @@ class _ProfileSelectionScreenState extends State<ProfileSelectionScreen> {
                                         }
                                       }),
                                     )
-                                  : Icon(isAdmin ? Icons.admin_panel_settings_outlined : Icons.visibility_outlined),
-                              title: Text(profile['name'].toString(), style: const TextStyle(fontWeight: FontWeight.w800)),
-                              subtitle: Text(isAdmin ? 'Admin access' : 'Read only access'),
-                              trailing: selectionMode ? const Icon(Icons.drag_handle) : const Icon(Icons.chevron_right),
+                                  : Icon(
+                                      isAdmin
+                                          ? Icons.admin_panel_settings_outlined
+                                          : Icons.visibility_outlined,
+                                    ),
+                              title: Text(
+                                profile['name'].toString(),
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                              subtitle: Text(
+                                isAdmin ? 'Admin access' : 'Read only access',
+                              ),
+                              trailing: selectionMode
+                                  ? const Icon(Icons.drag_handle)
+                                  : const Icon(Icons.chevron_right),
                               onTap: selectionMode
                                   ? () => setState(() {
-                                        if (selectedProfileIds.contains(id)) {
-                                          selectedProfileIds.remove(id);
-                                        } else {
-                                          selectedProfileIds.add(id);
-                                        }
-                                      })
+                                      if (selectedProfileIds.contains(id)) {
+                                        selectedProfileIds.remove(id);
+                                      } else {
+                                        selectedProfileIds.add(id);
+                                      }
+                                    })
                                   : () => widget.onProfileSelected(profile),
                             );
                           },
@@ -685,11 +831,24 @@ class _ProfileSelectionScreenState extends State<ProfileSelectionScreen> {
                       final id = invitation['id'] as int;
                       return ListTile(
                         leading: const Icon(Icons.mail_outline),
-                        title: Text(invitation['email'].toString(), style: const TextStyle(fontWeight: FontWeight.w800)),
-                        subtitle: Text(invitation['role'] == 'admin' ? 'Admin invitation' : 'Read only invitation'),
+                        title: Text(
+                          invitation['email'].toString(),
+                          style: const TextStyle(fontWeight: FontWeight.w800),
+                        ),
+                        subtitle: Text(
+                          invitation['role'] == 'admin'
+                              ? 'Admin invitation'
+                              : 'Read only invitation',
+                        ),
                         trailing: FilledButton(
-                          onPressed: acceptingInvitationId == id ? null : () => _acceptInvitation(id),
-                          child: Text(acceptingInvitationId == id ? 'Accepting' : 'Accept'),
+                          onPressed: acceptingInvitationId == id
+                              ? null
+                              : () => _acceptInvitation(id),
+                          child: Text(
+                            acceptingInvitationId == id
+                                ? 'Accepting'
+                                : 'Accept',
+                          ),
                         ),
                       );
                     }).toList(),
@@ -699,8 +858,17 @@ class _ProfileSelectionScreenState extends State<ProfileSelectionScreen> {
                 _SectionTitle('Create Profile'),
                 _SettingsCard(
                   children: [
-                    TextField(controller: profileName, decoration: const InputDecoration(labelText: 'Profile name')),
-                    _SubmitButton(saving: creating, label: 'Create Profile', onPressed: _createProfile),
+                    TextField(
+                      controller: profileName,
+                      decoration: const InputDecoration(
+                        labelText: 'Profile name',
+                      ),
+                    ),
+                    _SubmitButton(
+                      saving: creating,
+                      label: 'Create Profile',
+                      onPressed: _createProfile,
+                    ),
                   ],
                 ),
               ],
@@ -733,7 +901,9 @@ class _ProfileSelectionScreenState extends State<ProfileSelectionScreen> {
   Future<void> _acceptInvitation(int invitationId) async {
     setState(() => acceptingInvitationId = invitationId);
     try {
-      await widget.api.post('/api/invitations/$invitationId/accept', {'user_id': widget.user['id']});
+      await widget.api.post('/api/invitations/$invitationId/accept', {
+        'user_id': widget.user['id'],
+      });
       reload();
       if (!mounted) return;
       toast(context, 'Invitation accepted');
@@ -745,7 +915,11 @@ class _ProfileSelectionScreenState extends State<ProfileSelectionScreen> {
     }
   }
 
-  Future<void> _reorderProfiles(List<Map<String, dynamic>> rows, int oldIndex, int newIndex) async {
+  Future<void> _reorderProfiles(
+    List<Map<String, dynamic>> rows,
+    int oldIndex,
+    int newIndex,
+  ) async {
     if (newIndex > oldIndex) newIndex -= 1;
     final reordered = [...rows];
     final item = reordered.removeAt(oldIndex);
@@ -767,10 +941,18 @@ class _ProfileSelectionScreenState extends State<ProfileSelectionScreen> {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Delete Profiles'),
-        content: Text('Delete $count selected profile${count == 1 ? '' : 's'}? This permanently deletes each profile and all accounts, chunks, paychecks, transfers, and transactions inside it. This cannot be undone.'),
+        content: Text(
+          'Delete $count selected profile${count == 1 ? '' : 's'}? This permanently deletes each profile and all accounts, chunks, paychecks, transfers, and transactions inside it. This cannot be undone.',
+        ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Delete')),
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Delete'),
+          ),
         ],
       ),
     );
@@ -822,7 +1004,12 @@ class _DesktopShell extends StatelessWidget {
             child: SafeArea(
               child: Column(
                 children: [
-                  _SignedInBar(user: user, profile: profile, onChangeProfile: onChangeProfile, onSignOut: onSignOut),
+                  _SignedInBar(
+                    user: user,
+                    profile: profile,
+                    onChangeProfile: onChangeProfile,
+                    onSignOut: onSignOut,
+                  ),
                   Expanded(child: child),
                 ],
               ),
@@ -857,13 +1044,23 @@ class _PhoneShell extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final navIndex = routes.contains(selected) ? routes.indexOf(selected) : routes.length - 1;
+    final navIndex = routes.contains(selected)
+        ? routes.indexOf(selected)
+        : routes.length - 1;
     return Scaffold(
       appBar: AppBar(
         title: Text(profile['name']?.toString() ?? 'Budget'),
         actions: [
-          IconButton(onPressed: onChangeProfile, tooltip: 'Switch profile', icon: const Icon(Icons.folder_open)),
-          IconButton(onPressed: onSignOut, tooltip: 'Sign out', icon: const Icon(Icons.logout)),
+          IconButton(
+            onPressed: onChangeProfile,
+            tooltip: 'Switch profile',
+            icon: const Icon(Icons.folder_open),
+          ),
+          IconButton(
+            onPressed: onSignOut,
+            tooltip: 'Sign out',
+            icon: const Icon(Icons.logout),
+          ),
         ],
       ),
       body: SafeArea(child: child),
@@ -872,11 +1069,31 @@ class _PhoneShell extends StatelessWidget {
         onDestinationSelected: (index) => onSelect(routes[index]),
         labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
         destinations: const [
-          NavigationDestination(icon: Icon(Icons.dashboard_outlined), selectedIcon: Icon(Icons.dashboard), label: 'Home'),
-          NavigationDestination(icon: Icon(Icons.add_circle_outline), selectedIcon: Icon(Icons.add_circle), label: 'Paycheck'),
-          NavigationDestination(icon: Icon(Icons.swap_horiz_outlined), selectedIcon: Icon(Icons.swap_horiz), label: 'Transfer'),
-          NavigationDestination(icon: Icon(Icons.account_balance_wallet_outlined), selectedIcon: Icon(Icons.account_balance_wallet), label: 'Accounts'),
-          NavigationDestination(icon: Icon(Icons.menu), selectedIcon: Icon(Icons.menu_open), label: 'More'),
+          NavigationDestination(
+            icon: Icon(Icons.dashboard_outlined),
+            selectedIcon: Icon(Icons.dashboard),
+            label: 'Home',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.add_circle_outline),
+            selectedIcon: Icon(Icons.add_circle),
+            label: 'Paycheck',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.swap_horiz_outlined),
+            selectedIcon: Icon(Icons.swap_horiz),
+            label: 'Transfer',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.account_balance_wallet_outlined),
+            selectedIcon: Icon(Icons.account_balance_wallet),
+            label: 'Accounts',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.menu),
+            selectedIcon: Icon(Icons.menu_open),
+            label: 'More',
+          ),
         ],
       ),
     );
@@ -884,7 +1101,12 @@ class _PhoneShell extends StatelessWidget {
 }
 
 class _SignedInBar extends StatelessWidget {
-  const _SignedInBar({required this.user, required this.profile, required this.onChangeProfile, required this.onSignOut});
+  const _SignedInBar({
+    required this.user,
+    required this.profile,
+    required this.onChangeProfile,
+    required this.onSignOut,
+  });
   final Map<String, dynamic> user;
   final Map<String, dynamic> profile;
   final VoidCallback onChangeProfile;
@@ -913,13 +1135,24 @@ class _SignedInBar extends StatelessWidget {
                   '${user['email']}  |  ${profile['role'] == 'admin' ? 'Admin' : 'Read only'}',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(color: Color(0xFF667085), fontSize: 12),
+                  style: const TextStyle(
+                    color: Color(0xFF667085),
+                    fontSize: 12,
+                  ),
                 ),
               ],
             ),
           ),
-          TextButton.icon(onPressed: onChangeProfile, icon: const Icon(Icons.folder_open), label: const Text('Switch')),
-          TextButton.icon(onPressed: onSignOut, icon: const Icon(Icons.logout), label: const Text('Sign Out')),
+          TextButton.icon(
+            onPressed: onChangeProfile,
+            icon: const Icon(Icons.folder_open),
+            label: const Text('Switch'),
+          ),
+          TextButton.icon(
+            onPressed: onSignOut,
+            icon: const Icon(Icons.logout),
+            label: const Text('Sign Out'),
+          ),
         ],
       ),
     );
@@ -927,7 +1160,11 @@ class _SignedInBar extends StatelessWidget {
 }
 
 class _Sidebar extends StatelessWidget {
-  const _Sidebar({required this.screens, required this.selected, required this.onSelect});
+  const _Sidebar({
+    required this.screens,
+    required this.selected,
+    required this.onSelect,
+  });
   final List<(String, IconData)> screens;
   final int selected;
   final ValueChanged<int> onSelect;
@@ -943,7 +1180,10 @@ class _Sidebar extends StatelessWidget {
           children: [
             const Padding(
               padding: EdgeInsets.fromLTRB(20, 18, 20, 18),
-              child: Text('ChunkyCat Budget', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
+              child: Text(
+                'ChunkyCat Budget',
+                style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
+              ),
             ),
             Expanded(
               child: ListView.builder(
@@ -953,11 +1193,16 @@ class _Sidebar extends StatelessWidget {
                   final item = screens[index];
                   return Padding(
                     padding: const EdgeInsets.only(bottom: 4),
-                    child: NavigationDrawerDestination(
-                      icon: Icon(item.$2),
-                      label: Text(item.$1),
-                      selectedIcon: Icon(item.$2),
-                    ).buildListTile(context, selected: selected == index, onTap: () => onSelect(index)),
+                    child:
+                        NavigationDrawerDestination(
+                          icon: Icon(item.$2),
+                          label: Text(item.$1),
+                          selectedIcon: Icon(item.$2),
+                        ).buildListTile(
+                          context,
+                          selected: selected == index,
+                          onTap: () => onSelect(index),
+                        ),
                   );
                 },
               ),
@@ -970,10 +1215,16 @@ class _Sidebar extends StatelessWidget {
 }
 
 extension on NavigationDrawerDestination {
-  Widget buildListTile(BuildContext context, {required bool selected, required VoidCallback onTap}) {
+  Widget buildListTile(
+    BuildContext context, {
+    required bool selected,
+    required VoidCallback onTap,
+  }) {
     final colors = Theme.of(context).colorScheme;
     return Material(
-      color: selected ? colors.primary.withValues(alpha: .11) : Colors.transparent,
+      color: selected
+          ? colors.primary.withValues(alpha: .11)
+          : Colors.transparent,
       borderRadius: BorderRadius.circular(8),
       child: ListTile(
         leading: icon,
@@ -1009,21 +1260,66 @@ class _ScreenHost extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return switch (selected) {
-      0 => DashboardScreen(data: data, refresh: refresh, goTo: goTo, canEdit: canEdit),
-      1 => PaycheckSetupScreen(data: data, api: api, refresh: refresh, canEdit: canEdit),
-      2 => AccountsScreen(data: data, api: api, refresh: refresh, canEdit: canEdit),
-      3 => ChunksScreen(data: data, api: api, refresh: refresh, canEdit: canEdit),
-      4 => AddPaycheckScreen(data: data, api: api, refresh: refresh, canEdit: canEdit),
-      5 => TransfersScreen(data: data, api: api, refresh: refresh, canEdit: canEdit),
-      6 => TransactionsScreen(data: data, api: api, refresh: refresh, canEdit: canEdit),
+      0 => DashboardScreen(
+        data: data,
+        refresh: refresh,
+        goTo: goTo,
+        canEdit: canEdit,
+      ),
+      1 => PaycheckSetupScreen(
+        data: data,
+        api: api,
+        refresh: refresh,
+        canEdit: canEdit,
+      ),
+      2 => AccountsScreen(
+        data: data,
+        api: api,
+        refresh: refresh,
+        canEdit: canEdit,
+      ),
+      3 => ChunksScreen(
+        data: data,
+        api: api,
+        refresh: refresh,
+        canEdit: canEdit,
+      ),
+      4 => AddPaycheckScreen(
+        data: data,
+        api: api,
+        refresh: refresh,
+        canEdit: canEdit,
+      ),
+      5 => TransfersScreen(
+        data: data,
+        api: api,
+        refresh: refresh,
+        canEdit: canEdit,
+      ),
+      6 => TransactionsScreen(
+        data: data,
+        api: api,
+        refresh: refresh,
+        canEdit: canEdit,
+      ),
       8 => MobileMoreScreen(goTo: goTo),
-      _ => SettingsScreen(api: api, selectedProfile: selectedProfile, canEdit: canEdit),
+      _ => SettingsScreen(
+        api: api,
+        selectedProfile: selectedProfile,
+        canEdit: canEdit,
+      ),
     };
   }
 }
 
 class DashboardScreen extends StatelessWidget {
-  const DashboardScreen({super.key, required this.data, required this.refresh, required this.goTo, required this.canEdit});
+  const DashboardScreen({
+    super.key,
+    required this.data,
+    required this.refresh,
+    required this.goTo,
+    required this.canEdit,
+  });
   final Map<String, dynamic> data;
   final VoidCallback refresh;
   final ValueChanged<int> goTo;
@@ -1033,14 +1329,26 @@ class DashboardScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final isPhone = MediaQuery.sizeOf(context).width < 600;
     final totals = Map<String, dynamic>.from(data['totals'] ?? {});
-    final accounts = List<Map<String, dynamic>>.from((data['accounts'] ?? []).map((e) => Map<String, dynamic>.from(e)));
-    final chunks = List<Map<String, dynamic>>.from((data['chunks'] ?? []).map((e) => Map<String, dynamic>.from(e)));
-    final movements = List<Map<String, dynamic>>.from((data['recent_money_movements'] ?? []).map((e) => Map<String, dynamic>.from(e)));
+    final accounts = List<Map<String, dynamic>>.from(
+      (data['accounts'] ?? []).map((e) => Map<String, dynamic>.from(e)),
+    );
+    final chunks = List<Map<String, dynamic>>.from(
+      (data['chunks'] ?? []).map((e) => Map<String, dynamic>.from(e)),
+    );
+    final movements = List<Map<String, dynamic>>.from(
+      (data['recent_money_movements'] ?? []).map(
+        (e) => Map<String, dynamic>.from(e),
+      ),
+    );
 
     return _Page(
       title: 'Dashboard',
       actions: [
-        IconButton(onPressed: refresh, tooltip: 'Refresh', icon: const Icon(Icons.refresh)),
+        IconButton(
+          onPressed: refresh,
+          tooltip: 'Refresh',
+          icon: const Icon(Icons.refresh),
+        ),
       ],
       child: ListView(
         padding: EdgeInsets.all(isPhone ? 14 : 20),
@@ -1048,9 +1356,21 @@ class DashboardScreen extends StatelessWidget {
           _ResponsiveGrid(
             minWidth: 210,
             children: [
-              _MetricCard(label: 'Account Balance', value: money(totals['account_balance']), icon: Icons.account_balance_wallet_outlined),
-              _MetricCard(label: 'Allocated', value: money(totals['allocated_balance']), icon: Icons.savings_outlined),
-              _MetricCard(label: 'Unallocated', value: money(totals['unallocated_balance']), icon: Icons.inventory_2_outlined),
+              _MetricCard(
+                label: 'Account Balance',
+                value: money(totals['account_balance']),
+                icon: Icons.account_balance_wallet_outlined,
+              ),
+              _MetricCard(
+                label: 'Allocated',
+                value: money(totals['allocated_balance']),
+                icon: Icons.savings_outlined,
+              ),
+              _MetricCard(
+                label: 'Unallocated',
+                value: money(totals['unallocated_balance']),
+                icon: Icons.inventory_2_outlined,
+              ),
             ],
           ),
           const SizedBox(height: 16),
@@ -1062,7 +1382,8 @@ class DashboardScreen extends StatelessWidget {
             children: accounts.map((a) {
               return _ListRow(
                 title: a['name'].toString(),
-                subtitle: 'Allocated ${money(a['allocated_balance'])}  |  Unallocated ${money(a['unallocated_balance'])}',
+                subtitle:
+                    'Allocated ${money(a['allocated_balance'])}  |  Unallocated ${money(a['unallocated_balance'])}',
                 trailing: money(a['balance']),
               );
             }).toList(),
@@ -1074,7 +1395,8 @@ class DashboardScreen extends StatelessWidget {
             children: chunks.map((c) {
               return _ListRow(
                 title: c['name'].toString(),
-                subtitle: '${c['account_name']}  |  ${money(c['amount_per_paycheck'])} per paycheck',
+                subtitle:
+                    '${c['account_name']}  |  ${money(c['amount_per_paycheck'])} per paycheck',
                 trailing: money(c['balance']),
               );
             }).toList(),
@@ -1086,7 +1408,9 @@ class DashboardScreen extends StatelessWidget {
             children: movements.map((m) {
               return _ListRow(
                 title: '${m['source_type']} to ${m['destination_type']}',
-                subtitle: m['note'].toString().isEmpty ? m['created_at'].toString() : m['note'].toString(),
+                subtitle: m['note'].toString().isEmpty
+                    ? m['created_at'].toString()
+                    : m['note'].toString(),
                 trailing: money(m['amount']),
               );
             }).toList(),
@@ -1109,10 +1433,26 @@ class _DashboardActions extends StatelessWidget {
         spacing: 12,
         runSpacing: 12,
         children: [
-          FilledButton.icon(onPressed: () => goTo(4), icon: const Icon(Icons.add), label: const Text('Add Paycheck')),
-          OutlinedButton.icon(onPressed: () => goTo(5), icon: const Icon(Icons.swap_horiz), label: const Text('Add Transfer')),
-          OutlinedButton.icon(onPressed: () => goTo(2), icon: const Icon(Icons.add_card), label: const Text('Account')),
-          OutlinedButton.icon(onPressed: () => goTo(3), icon: const Icon(Icons.playlist_add), label: const Text('Chunk')),
+          FilledButton.icon(
+            onPressed: () => goTo(4),
+            icon: const Icon(Icons.add),
+            label: const Text('Add Paycheck'),
+          ),
+          OutlinedButton.icon(
+            onPressed: () => goTo(5),
+            icon: const Icon(Icons.swap_horiz),
+            label: const Text('Add Transfer'),
+          ),
+          OutlinedButton.icon(
+            onPressed: () => goTo(2),
+            icon: const Icon(Icons.add_card),
+            label: const Text('Account'),
+          ),
+          OutlinedButton.icon(
+            onPressed: () => goTo(3),
+            icon: const Icon(Icons.playlist_add),
+            label: const Text('Chunk'),
+          ),
         ],
       );
     }
@@ -1169,7 +1509,13 @@ class _DashboardActions extends StatelessWidget {
 }
 
 class PaycheckSetupScreen extends StatefulWidget {
-  const PaycheckSetupScreen({super.key, required this.data, required this.api, required this.refresh, required this.canEdit});
+  const PaycheckSetupScreen({
+    super.key,
+    required this.data,
+    required this.api,
+    required this.refresh,
+    required this.canEdit,
+  });
   final Map<String, dynamic> data;
   final BudgetApi api;
   final VoidCallback refresh;
@@ -1206,8 +1552,24 @@ class _PaycheckSetupScreenState extends State<PaycheckSetupScreen> {
         children: [
           _MoneyField(label: 'Gross pay amount', controller: gross),
           _MoneyField(label: 'Net pay amount', controller: net),
-          _DropdownField(label: 'Net pay mode', value: mode, values: const ['manual', 'expected', 'estimated'], onChanged: (v) => setState(() => mode = v ?? mode)),
-          _DropdownField(label: 'Pay frequency', value: frequency, values: const ['weekly', 'biweekly', 'semimonthly', 'monthly', 'custom'], onChanged: (v) => setState(() => frequency = v ?? frequency)),
+          _DropdownField(
+            label: 'Net pay mode',
+            value: mode,
+            values: const ['manual', 'expected', 'estimated'],
+            onChanged: (v) => setState(() => mode = v ?? mode),
+          ),
+          _DropdownField(
+            label: 'Pay frequency',
+            value: frequency,
+            values: const [
+              'weekly',
+              'biweekly',
+              'semimonthly',
+              'monthly',
+              'custom',
+            ],
+            onChanged: (v) => setState(() => frequency = v ?? frequency),
+          ),
           _SubmitButton(
             saving: saving,
             label: 'Save Profile',
@@ -1240,7 +1602,13 @@ class _PaycheckSetupScreenState extends State<PaycheckSetupScreen> {
 }
 
 class AccountsScreen extends StatefulWidget {
-  const AccountsScreen({super.key, required this.data, required this.api, required this.refresh, required this.canEdit});
+  const AccountsScreen({
+    super.key,
+    required this.data,
+    required this.api,
+    required this.refresh,
+    required this.canEdit,
+  });
   final Map<String, dynamic> data;
   final BudgetApi api;
   final VoidCallback refresh;
@@ -1272,17 +1640,26 @@ class _AccountsScreenState extends State<AccountsScreen> {
               ),
               if (selectionMode)
                 IconButton(
-                  onPressed: selectedAccountIds.isEmpty ? null : () => _deleteSelected(accounts),
+                  onPressed: selectedAccountIds.isEmpty
+                      ? null
+                      : () => _deleteSelected(accounts),
                   tooltip: 'Delete selected accounts',
                   icon: const Icon(Icons.delete_outline),
                 ),
               if (selectionMode)
                 IconButton(
-                  onPressed: selectedAccountIds.isEmpty ? null : () => _moveChunks(accounts),
+                  onPressed: selectedAccountIds.isEmpty
+                      ? null
+                      : () => _moveChunks(accounts),
                   tooltip: 'Move chunks',
                   icon: const Icon(Icons.drive_file_move_outline),
                 ),
-              FilledButton.icon(onPressed: () => showAccountDialog(context, widget.api, widget.refresh), icon: const Icon(Icons.add), label: const Text('New')),
+              FilledButton.icon(
+                onPressed: () =>
+                    showAccountDialog(context, widget.api, widget.refresh),
+                icon: const Icon(Icons.add),
+                label: const Text('New'),
+              ),
             ]
           : [],
       child: ListView(
@@ -1296,58 +1673,88 @@ class _AccountsScreenState extends State<AccountsScreen> {
             child: accounts.isEmpty
                 ? const Padding(
                     padding: EdgeInsets.all(18),
-                    child: Text('Create a real-world account to hold paycheck money', style: TextStyle(color: Color(0xFF667085))),
+                    child: Text(
+                      'Create a real-world account to hold paycheck money',
+                      style: TextStyle(color: Color(0xFF667085)),
+                    ),
                   )
                 : ReorderableListView.builder(
                     shrinkWrap: true,
                     physics: const NeverScrollableScrollPhysics(),
                     itemCount: accounts.length,
-                    onReorder: (oldIndex, newIndex) => _reorderAccounts(accounts, oldIndex, newIndex),
+                    onReorder: (oldIndex, newIndex) =>
+                        _reorderAccounts(accounts, oldIndex, newIndex),
                     itemBuilder: (context, index) {
                       final a = accounts[index];
                       final id = a['id'] as int;
                       return ListTile(
-                key: ValueKey('account-$id'),
-                leading: selectionMode
-                    ? Checkbox(
-                        value: selectedAccountIds.contains(id),
-                        onChanged: (checked) => setState(() {
-                          if (checked ?? false) {
-                            selectedAccountIds.add(id);
-                          } else {
-                            selectedAccountIds.remove(id);
-                          }
-                        }),
-                      )
-                    : null,
-                title: Text(a['name'].toString(), style: const TextStyle(fontWeight: FontWeight.w800)),
-                subtitle: Text('${a['type']}  |  ${a['source_mode'] == 'bank_connected' ? 'Bank connected' : 'Manual'}  |  Balance ${money(a['balance'])}  |  Unallocated ${money(a['unallocated_balance'])}'),
-                onTap: selectionMode
-                    ? () => setState(() {
-                          if (selectedAccountIds.contains(id)) {
-                            selectedAccountIds.remove(id);
-                          } else {
-                            selectedAccountIds.add(id);
-                          }
-                        })
-                    : null,
-                trailing: selectionMode
-                    ? const Icon(Icons.drag_handle)
-                    : widget.canEdit
-                    ? PopupMenuButton<String>(
-                        onSelected: (action) async {
-                          if (action == 'edit') {
-                            await showAccountDialog(context, widget.api, widget.refresh, account: a);
-                          } else if (action == 'delete') {
-                            await deleteAccount(context, widget.api, widget.refresh, a);
-                          }
-                        },
-                        itemBuilder: (context) => const [
-                          PopupMenuItem(value: 'edit', child: Text('Edit account')),
-                          PopupMenuItem(value: 'delete', child: Text('Delete account')),
-                        ],
-                      )
-                    : Text(money(a['balance']), style: const TextStyle(fontWeight: FontWeight.w800)),
+                        key: ValueKey('account-$id'),
+                        leading: selectionMode
+                            ? Checkbox(
+                                value: selectedAccountIds.contains(id),
+                                onChanged: (checked) => setState(() {
+                                  if (checked ?? false) {
+                                    selectedAccountIds.add(id);
+                                  } else {
+                                    selectedAccountIds.remove(id);
+                                  }
+                                }),
+                              )
+                            : null,
+                        title: Text(
+                          a['name'].toString(),
+                          style: const TextStyle(fontWeight: FontWeight.w800),
+                        ),
+                        subtitle: Text(
+                          '${a['type']}  |  ${a['source_mode'] == 'bank_connected' ? 'Bank connected' : 'Manual'}  |  Balance ${money(a['balance'])}  |  Unallocated ${money(a['unallocated_balance'])}',
+                        ),
+                        onTap: selectionMode
+                            ? () => setState(() {
+                                if (selectedAccountIds.contains(id)) {
+                                  selectedAccountIds.remove(id);
+                                } else {
+                                  selectedAccountIds.add(id);
+                                }
+                              })
+                            : null,
+                        trailing: selectionMode
+                            ? const Icon(Icons.drag_handle)
+                            : widget.canEdit
+                            ? PopupMenuButton<String>(
+                                onSelected: (action) async {
+                                  if (action == 'edit') {
+                                    await showAccountDialog(
+                                      context,
+                                      widget.api,
+                                      widget.refresh,
+                                      account: a,
+                                    );
+                                  } else if (action == 'delete') {
+                                    await deleteAccount(
+                                      context,
+                                      widget.api,
+                                      widget.refresh,
+                                      a,
+                                    );
+                                  }
+                                },
+                                itemBuilder: (context) => const [
+                                  PopupMenuItem(
+                                    value: 'edit',
+                                    child: Text('Edit account'),
+                                  ),
+                                  PopupMenuItem(
+                                    value: 'delete',
+                                    child: Text('Delete account'),
+                                  ),
+                                ],
+                              )
+                            : Text(
+                                money(a['balance']),
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
                       );
                     },
                   ),
@@ -1363,10 +1770,18 @@ class _AccountsScreenState extends State<AccountsScreen> {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Delete Accounts'),
-        content: Text('Delete $count selected zero-balance account${count == 1 ? '' : 's'}? Cash-flow logs are kept. Accounts with balances or assigned chunks cannot be deleted.'),
+        content: Text(
+          'Delete $count selected zero-balance account${count == 1 ? '' : 's'}? Cash-flow logs are kept. Accounts with balances or assigned chunks cannot be deleted.',
+        ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Delete')),
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Delete'),
+          ),
         ],
       ),
     );
@@ -1386,7 +1801,11 @@ class _AccountsScreenState extends State<AccountsScreen> {
     }
   }
 
-  Future<void> _reorderAccounts(List<Map<String, dynamic>> accounts, int oldIndex, int newIndex) async {
+  Future<void> _reorderAccounts(
+    List<Map<String, dynamic>> accounts,
+    int oldIndex,
+    int newIndex,
+  ) async {
     if (newIndex > oldIndex) newIndex -= 1;
     final reordered = [...accounts];
     final item = reordered.removeAt(oldIndex);
@@ -1407,7 +1826,9 @@ class _AccountsScreenState extends State<AccountsScreen> {
       return;
     }
     final sourceId = selectedAccountIds.first;
-    final destinations = accounts.where((account) => account['id'] != sourceId).toList();
+    final destinations = accounts
+        .where((account) => account['id'] != sourceId)
+        .toList();
     if (destinations.isEmpty) {
       toast(context, 'Create another account first');
       return;
@@ -1422,19 +1843,30 @@ class _AccountsScreenState extends State<AccountsScreen> {
             label: 'Destination account',
             value: destinationId,
             values: destinations.map((a) => a['id'] as int).toList(),
-            labelFor: (id) => destinations.firstWhere((a) => a['id'] == id)['name'].toString(),
-            onChanged: (value) => setState(() => destinationId = value ?? destinationId),
+            labelFor: (id) => destinations
+                .firstWhere((a) => a['id'] == id)['name']
+                .toString(),
+            onChanged: (value) =>
+                setState(() => destinationId = value ?? destinationId),
           ),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-            FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Move')),
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Move'),
+            ),
           ],
         ),
       ),
     );
     if (confirmed != true) return;
     try {
-      await widget.api.post('/api/accounts/$sourceId/move-chunks', {'destination_account_id': destinationId});
+      await widget.api.post('/api/accounts/$sourceId/move-chunks', {
+        'destination_account_id': destinationId,
+      });
       setState(() {
         selectedAccountIds.clear();
         selectionMode = false;
@@ -1471,23 +1903,39 @@ class _AccountCreateCardState extends State<_AccountCreateCard> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const Text('Create Account', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
+            const Text(
+              'Create Account',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+            ),
             const SizedBox(height: 12),
-            TextField(controller: name, decoration: const InputDecoration(labelText: 'Account name')),
+            TextField(
+              controller: name,
+              decoration: const InputDecoration(labelText: 'Account name'),
+            ),
             const SizedBox(height: 12),
-            _DropdownField(label: 'Type', value: type, values: const ['checking', 'savings', 'cash', 'other'], onChanged: (v) => setState(() => type = v ?? type)),
+            _DropdownField(
+              label: 'Type',
+              value: type,
+              values: const ['checking', 'savings', 'cash', 'other'],
+              onChanged: (v) => setState(() => type = v ?? type),
+            ),
             const SizedBox(height: 12),
             _DropdownField(
               label: 'Balance management',
               value: sourceMode,
               values: const ['manual', 'bank_connected'],
-              labelFor: (value) => value == 'manual' ? 'Manual' : 'Bank connected',
+              labelFor: (value) =>
+                  value == 'manual' ? 'Manual' : 'Bank connected',
               onChanged: (v) => setState(() => sourceMode = v ?? sourceMode),
             ),
             const SizedBox(height: 12),
             _MoneyField(label: 'Starting balance', controller: balance),
             const SizedBox(height: 12),
-            _SubmitButton(saving: saving, label: 'Add Account', onPressed: _save),
+            _SubmitButton(
+              saving: saving,
+              label: 'Add Account',
+              onPressed: _save,
+            ),
           ],
         ),
       ),
@@ -1519,7 +1967,13 @@ class _AccountCreateCardState extends State<_AccountCreateCard> {
 }
 
 class ChunksScreen extends StatelessWidget {
-  const ChunksScreen({super.key, required this.data, required this.api, required this.refresh, required this.canEdit});
+  const ChunksScreen({
+    super.key,
+    required this.data,
+    required this.api,
+    required this.refresh,
+    required this.canEdit,
+  });
   final Map<String, dynamic> data;
   final BudgetApi api;
   final VoidCallback refresh;
@@ -1532,16 +1986,29 @@ class ChunksScreen extends StatelessWidget {
     final accounts = listOfMaps(data['accounts']);
     return _Page(
       title: 'Chunks',
-      actions: canEdit ? [FilledButton.icon(onPressed: accounts.isEmpty ? null : () => showChunkDialog(context, api, refresh, accounts), icon: const Icon(Icons.add), label: const Text('New'))] : [],
+      actions: canEdit
+          ? [
+              FilledButton.icon(
+                onPressed: accounts.isEmpty
+                    ? null
+                    : () => showChunkDialog(context, api, refresh, accounts),
+                icon: const Icon(Icons.add),
+                label: const Text('New'),
+              ),
+            ]
+          : [],
       child: ListView(
         padding: EdgeInsets.all(isPhone ? 14 : 20),
         children: [
           _DataCard(
-            emptyText: accounts.isEmpty ? 'Create an account before adding chunks' : 'Create chunks that apply once per paycheck',
+            emptyText: accounts.isEmpty
+                ? 'Create an account before adding chunks'
+                : 'Create chunks that apply once per paycheck',
             children: chunks.map((c) {
               return _ListRow(
                 title: c['name'].toString(),
-                subtitle: '${c['account_name']}  |  ${money(c['amount_per_paycheck'])} per paycheck',
+                subtitle:
+                    '${c['account_name']}  |  ${money(c['amount_per_paycheck'])} per paycheck',
                 trailing: money(c['balance']),
               );
             }).toList(),
@@ -1553,7 +2020,13 @@ class ChunksScreen extends StatelessWidget {
 }
 
 class AddPaycheckScreen extends StatefulWidget {
-  const AddPaycheckScreen({super.key, required this.data, required this.api, required this.refresh, required this.canEdit});
+  const AddPaycheckScreen({
+    super.key,
+    required this.data,
+    required this.api,
+    required this.refresh,
+    required this.canEdit,
+  });
   final Map<String, dynamic> data;
   final BudgetApi api;
   final VoidCallback refresh;
@@ -1578,21 +2051,36 @@ class _AddPaycheckScreenState extends State<AddPaycheckScreen> {
       title: 'Add Paycheck',
       child: _FormCard(
         children: [
-          if (profile == null) const _Notice('Create a paycheck profile before adding a paycheck.'),
-          if (accounts.isEmpty) const _Notice('Create an account before adding a paycheck.'),
+          if (profile == null)
+            const _Notice(
+              'Create a paycheck profile before adding a paycheck.',
+            ),
+          if (accounts.isEmpty)
+            const _Notice('Create an account before adding a paycheck.'),
           _DropdownField<int>(
             label: 'Deposit account',
             value: accountId,
             values: accounts.map((a) => a['id'] as int).toList(),
-            labelFor: (id) => accounts.firstWhere((a) => a['id'] == id)['name'].toString(),
+            labelFor: (id) =>
+                accounts.firstWhere((a) => a['id'] == id)['name'].toString(),
             onChanged: (v) => setState(() => accountId = v),
           ),
-          _DropdownField(label: 'Amount', value: mode, values: const ['expected', 'custom'], labelFor: (v) => v == 'expected' ? 'Use expected net pay' : 'Use custom amount', onChanged: (v) => setState(() => mode = v ?? mode)),
-          if (mode == 'custom') _MoneyField(label: 'Custom amount', controller: custom),
+          _DropdownField(
+            label: 'Amount',
+            value: mode,
+            values: const ['expected', 'custom'],
+            labelFor: (v) =>
+                v == 'expected' ? 'Use expected net pay' : 'Use custom amount',
+            onChanged: (v) => setState(() => mode = v ?? mode),
+          ),
+          if (mode == 'custom')
+            _MoneyField(label: 'Custom amount', controller: custom),
           _SubmitButton(
             saving: saving,
             label: 'Add Paycheck',
-            onPressed: !widget.canEdit || profile == null || accountId == null ? null : _add,
+            onPressed: !widget.canEdit || profile == null || accountId == null
+                ? null
+                : _add,
           ),
         ],
       ),
@@ -1609,7 +2097,10 @@ class _AddPaycheckScreenState extends State<AddPaycheckScreen> {
       });
       widget.refresh();
       if (!mounted) return;
-      toast(context, 'Paycheck added. Unallocated: ${money(result['unallocated_amount'])}');
+      toast(
+        context,
+        'Paycheck added. Unallocated: ${money(result['unallocated_amount'])}',
+      );
     } catch (error) {
       if (!mounted) return;
       toast(context, error.toString());
@@ -1620,7 +2111,13 @@ class _AddPaycheckScreenState extends State<AddPaycheckScreen> {
 }
 
 class TransfersScreen extends StatefulWidget {
-  const TransfersScreen({super.key, required this.data, required this.api, required this.refresh, required this.canEdit});
+  const TransfersScreen({
+    super.key,
+    required this.data,
+    required this.api,
+    required this.refresh,
+    required this.canEdit,
+  });
   final Map<String, dynamic> data;
   final BudgetApi api;
   final VoidCallback refresh;
@@ -1643,18 +2140,34 @@ class _TransfersScreenState extends State<TransfersScreen> {
   @override
   Widget build(BuildContext context) {
     final accounts = listOfMaps(widget.data['accounts']);
-    final manualAccounts = accounts.where((account) => account['source_mode'] != 'bank_connected').toList();
+    final manualAccounts = accounts
+        .where((account) => account['source_mode'] != 'bank_connected')
+        .toList();
     final chunks = listOfMaps(widget.data['chunks']);
-    final selectableAccounts = movementType == 'manual_account_transfer' ? manualAccounts : accounts;
-    sourceId ??= sourceType == 'chunk' && chunks.isNotEmpty ? chunks.first['id'] as int : selectableAccounts.isNotEmpty ? selectableAccounts.first['id'] as int : null;
-    destinationId ??= destinationType == 'chunk' && chunks.isNotEmpty ? chunks.first['id'] as int : selectableAccounts.isNotEmpty ? selectableAccounts.first['id'] as int : null;
+    final selectableAccounts = movementType == 'manual_account_transfer'
+        ? manualAccounts
+        : accounts;
+    sourceId ??= sourceType == 'chunk' && chunks.isNotEmpty
+        ? chunks.first['id'] as int
+        : selectableAccounts.isNotEmpty
+        ? selectableAccounts.first['id'] as int
+        : null;
+    destinationId ??= destinationType == 'chunk' && chunks.isNotEmpty
+        ? chunks.first['id'] as int
+        : selectableAccounts.isNotEmpty
+        ? selectableAccounts.first['id'] as int
+        : null;
 
     return _Page(
       title: 'Transfers',
       child: ListView(
-        padding: EdgeInsets.all(MediaQuery.sizeOf(context).width < 600 ? 14 : 20),
+        padding: EdgeInsets.all(
+          MediaQuery.sizeOf(context).width < 600 ? 14 : 20,
+        ),
         children: [
-          const _Notice('Use Add Transfer to move existing budget money between unallocated balances and chunks. For unallocated to chunk, choose the account as the source and a chunk in that same account as the destination.'),
+          const _Notice(
+            'Use Add Transfer to move existing budget money between unallocated balances and chunks. For unallocated to chunk, choose the account as the source and a chunk in that same account as the destination.',
+          ),
           const SizedBox(height: 14),
           _FormCard(
             children: [
@@ -1662,41 +2175,98 @@ class _TransfersScreenState extends State<TransfersScreen> {
                 label: 'Transfer type',
                 value: movementType,
                 values: const ['allocation', 'manual_account_transfer'],
-                labelFor: (value) => value == 'allocation' ? 'Allocation transfer' : 'Manual account transfer',
+                labelFor: (value) => value == 'allocation'
+                    ? 'Allocation transfer'
+                    : 'Manual account transfer',
                 onChanged: (v) => setState(() {
                   movementType = v ?? movementType;
                   sourceType = 'unallocated';
-                  destinationType = movementType == 'manual_account_transfer' ? 'unallocated' : 'chunk';
+                  destinationType = movementType == 'manual_account_transfer'
+                      ? 'unallocated'
+                      : 'chunk';
                   sourceId = null;
                   destinationId = null;
                 }),
               ),
               if (movementType == 'manual_account_transfer') ...[
-                _EntityDropdown(label: 'From manual account', type: 'unallocated', id: sourceId, accounts: manualAccounts, chunks: chunks, onChanged: (v) => setState(() => sourceId = v)),
-                _EntityDropdown(label: 'To manual account', type: 'unallocated', id: destinationId, accounts: manualAccounts, chunks: chunks, onChanged: (v) => setState(() => destinationId = v)),
+                _EntityDropdown(
+                  label: 'From manual account',
+                  type: 'unallocated',
+                  id: sourceId,
+                  accounts: manualAccounts,
+                  chunks: chunks,
+                  onChanged: (v) => setState(() => sourceId = v),
+                ),
+                _EntityDropdown(
+                  label: 'To manual account',
+                  type: 'unallocated',
+                  id: destinationId,
+                  accounts: manualAccounts,
+                  chunks: chunks,
+                  onChanged: (v) => setState(() => destinationId = v),
+                ),
               ] else ...[
-                _DropdownField(label: 'From', value: sourceType, values: const ['chunk', 'unallocated'], onChanged: (v) => setState(() { sourceType = v ?? sourceType; sourceId = null; })),
-                _EntityDropdown(label: 'Source', type: sourceType, id: sourceId, accounts: accounts, chunks: chunks, onChanged: (v) => setState(() => sourceId = v)),
+                _DropdownField(
+                  label: 'From',
+                  value: sourceType,
+                  values: const ['chunk', 'unallocated'],
+                  onChanged: (v) => setState(() {
+                    sourceType = v ?? sourceType;
+                    sourceId = null;
+                  }),
+                ),
+                _EntityDropdown(
+                  label: 'Source',
+                  type: sourceType,
+                  id: sourceId,
+                  accounts: accounts,
+                  chunks: chunks,
+                  onChanged: (v) => setState(() => sourceId = v),
+                ),
                 _DropdownField(
                   label: 'To',
                   value: destinationType,
                   values: const ['chunk', 'unallocated', 'outside_account'],
                   labelFor: movementLabel,
-                  onChanged: (v) => setState(() { destinationType = v ?? destinationType; destinationId = null; }),
+                  onChanged: (v) => setState(() {
+                    destinationType = v ?? destinationType;
+                    destinationId = null;
+                  }),
                 ),
-                if (destinationType != 'outside_account') _EntityDropdown(label: 'Destination', type: destinationType == 'chunk' ? 'chunk' : 'unallocated', id: destinationId, accounts: accounts, chunks: chunks, onChanged: (v) => setState(() => destinationId = v)),
+                if (destinationType != 'outside_account')
+                  _EntityDropdown(
+                    label: 'Destination',
+                    type: destinationType == 'chunk' ? 'chunk' : 'unallocated',
+                    id: destinationId,
+                    accounts: accounts,
+                    chunks: chunks,
+                    onChanged: (v) => setState(() => destinationId = v),
+                  ),
               ],
               _MoneyField(label: 'Amount', controller: amount),
-              TextField(controller: note, decoration: const InputDecoration(labelText: 'Note')),
-              _SubmitButton(saving: saving, label: 'Add Transfer', onPressed: !widget.canEdit || sourceId == null ? null : _save),
+              TextField(
+                controller: note,
+                decoration: const InputDecoration(labelText: 'Note'),
+              ),
+              _SubmitButton(
+                saving: saving,
+                label: 'Add Transfer',
+                onPressed: !widget.canEdit || sourceId == null ? null : _save,
+              ),
             ],
           ),
           const SizedBox(height: 20),
           _SectionTitle('Movement Log'),
           _DataCard(
             emptyText: 'No movements yet',
-            children: listOfMaps(widget.data['recent_money_movements']).map((m) {
-              return _ListRow(title: '${m['source_type']} to ${m['destination_type']}', subtitle: m['note'].toString(), trailing: money(m['amount']));
+            children: listOfMaps(widget.data['recent_money_movements']).map((
+              m,
+            ) {
+              return _ListRow(
+                title: '${m['source_type']} to ${m['destination_type']}',
+                subtitle: m['note'].toString(),
+                trailing: money(m['amount']),
+              );
             }).toList(),
           ),
         ],
@@ -1712,7 +2282,9 @@ class _TransfersScreenState extends State<TransfersScreen> {
         'source_type': sourceType,
         'source_id': sourceId,
         'destination_type': destinationType,
-        'destination_id': destinationType == 'outside_account' ? null : destinationId,
+        'destination_id': destinationType == 'outside_account'
+            ? null
+            : destinationId,
         'amount': parseMoney(amount.text),
         'note': note.text,
       });
@@ -1729,7 +2301,13 @@ class _TransfersScreenState extends State<TransfersScreen> {
 }
 
 class TransactionsScreen extends StatefulWidget {
-  const TransactionsScreen({super.key, required this.data, required this.api, required this.refresh, required this.canEdit});
+  const TransactionsScreen({
+    super.key,
+    required this.data,
+    required this.api,
+    required this.refresh,
+    required this.canEdit,
+  });
   final Map<String, dynamic> data;
   final BudgetApi api;
   final VoidCallback refresh;
@@ -1747,7 +2325,8 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
   final description = TextEditingController();
   var saving = false;
 
-  Future<List<Map<String, dynamic>>> _load() async => listOfMaps(await widget.api.get('/api/transactions'));
+  Future<List<Map<String, dynamic>>> _load() async =>
+      listOfMaps(await widget.api.get('/api/transactions'));
 
   @override
   Widget build(BuildContext context) {
@@ -1756,9 +2335,13 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
     return _Page(
       title: 'Transactions',
       child: ListView(
-        padding: EdgeInsets.all(MediaQuery.sizeOf(context).width < 600 ? 14 : 20),
+        padding: EdgeInsets.all(
+          MediaQuery.sizeOf(context).width < 600 ? 14 : 20,
+        ),
         children: [
-          const _Notice('Transactions record money entering or leaving an account from outside the budget, such as purchases, deposits, fees, or income. Transfers move existing money between tracked locations.'),
+          const _Notice(
+            'Transactions record money entering or leaving an account from outside the budget, such as purchases, deposits, fees, or income. Transfers move existing money between tracked locations.',
+          ),
           const SizedBox(height: 14),
           _FormCard(
             children: [
@@ -1766,13 +2349,28 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
                 label: 'Account',
                 value: accountId,
                 values: accounts.map((a) => a['id'] as int).toList(),
-                labelFor: (id) => accounts.firstWhere((a) => a['id'] == id)['name'].toString(),
+                labelFor: (id) => accounts
+                    .firstWhere((a) => a['id'] == id)['name']
+                    .toString(),
                 onChanged: (v) => setState(() => accountId = v),
               ),
               _MoneyField(label: 'Amount', controller: amount),
-              TextField(controller: description, decoration: const InputDecoration(labelText: 'Description')),
-              _DropdownField(label: 'Allocation', value: allocationType, values: const ['chunk', 'unallocated', 'outside_account'], onChanged: (v) => setState(() => allocationType = v ?? allocationType)),
-              _SubmitButton(saving: saving, label: 'Add Transaction', onPressed: !widget.canEdit || accountId == null ? null : _save),
+              TextField(
+                controller: description,
+                decoration: const InputDecoration(labelText: 'Description'),
+              ),
+              _DropdownField(
+                label: 'Allocation',
+                value: allocationType,
+                values: const ['chunk', 'unallocated', 'outside_account'],
+                onChanged: (v) =>
+                    setState(() => allocationType = v ?? allocationType),
+              ),
+              _SubmitButton(
+                saving: saving,
+                label: 'Add Transaction',
+                onPressed: !widget.canEdit || accountId == null ? null : _save,
+              ),
             ],
           ),
           const SizedBox(height: 20),
@@ -1782,8 +2380,18 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
             builder: (context, snapshot) {
               final rows = snapshot.data ?? [];
               return _DataCard(
-                emptyText: snapshot.connectionState == ConnectionState.waiting ? 'Loading transactions' : 'No transactions yet',
-                children: rows.map((t) => _ListRow(title: t['description'].toString(), subtitle: t['allocation_type'].toString(), trailing: money(t['amount']))).toList(),
+                emptyText: snapshot.connectionState == ConnectionState.waiting
+                    ? 'Loading transactions'
+                    : 'No transactions yet',
+                children: rows
+                    .map(
+                      (t) => _ListRow(
+                        title: t['description'].toString(),
+                        subtitle: t['allocation_type'].toString(),
+                        trailing: money(t['amount']),
+                      ),
+                    )
+                    .toList(),
               );
             },
           ),
@@ -1816,7 +2424,12 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
 }
 
 class SettingsScreen extends StatefulWidget {
-  const SettingsScreen({super.key, required this.api, required this.selectedProfile, required this.canEdit});
+  const SettingsScreen({
+    super.key,
+    required this.api,
+    required this.selectedProfile,
+    required this.canEdit,
+  });
   final BudgetApi api;
   final Map<String, dynamic> selectedProfile;
   final bool canEdit;
@@ -1837,7 +2450,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<Map<String, List<Map<String, dynamic>>>> _load() async {
     final users = listOfMaps(await widget.api.get('/api/users'));
-    final invitations = listOfMaps(await widget.api.get('/api/invitations?profile_id=${widget.selectedProfile['id']}'));
+    final invitations = listOfMaps(
+      await widget.api.get(
+        '/api/invitations?profile_id=${widget.selectedProfile['id']}',
+      ),
+    );
     return {'users': users, 'invitations': invitations};
   }
 
@@ -1860,18 +2477,36 @@ class _SettingsScreenState extends State<SettingsScreen> {
           return ListView(
             padding: EdgeInsets.all(isPhone ? 14 : 20),
             children: [
-              _Notice(widget.canEdit
-                  ? 'Admins can invite other users to this profile as admin or read only.'
-                  : 'This profile is read only for you. You can view balances, accounts, chunks, and activity.'),
+              _Notice(
+                widget.canEdit
+                    ? 'Admins can invite other users to this profile as admin or read only.'
+                    : 'This profile is read only for you. You can view balances, accounts, chunks, and activity.',
+              ),
               const SizedBox(height: 14),
               if (widget.canEdit) ...[
                 _SectionTitle('Create User'),
                 _SettingsCard(
                   children: [
-                    TextField(controller: userEmail, decoration: const InputDecoration(labelText: 'Email')),
-                    TextField(controller: userName, decoration: const InputDecoration(labelText: 'Display name')),
-                    TextField(controller: userPassword, obscureText: true, decoration: const InputDecoration(labelText: 'Password')),
-                    _SubmitButton(saving: saving, label: 'Create User', onPressed: _createUser),
+                    TextField(
+                      controller: userEmail,
+                      decoration: const InputDecoration(labelText: 'Email'),
+                    ),
+                    TextField(
+                      controller: userName,
+                      decoration: const InputDecoration(
+                        labelText: 'Display name',
+                      ),
+                    ),
+                    TextField(
+                      controller: userPassword,
+                      obscureText: true,
+                      decoration: const InputDecoration(labelText: 'Password'),
+                    ),
+                    _SubmitButton(
+                      saving: saving,
+                      label: 'Create User',
+                      onPressed: _createUser,
+                    ),
                   ],
                 ),
                 const SizedBox(height: 18),
@@ -1879,12 +2514,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
               _SectionTitle('Invite User'),
               _SettingsCard(
                 children: [
-                  TextField(controller: inviteEmail, decoration: const InputDecoration(labelText: 'Invite email')),
+                  TextField(
+                    controller: inviteEmail,
+                    decoration: const InputDecoration(
+                      labelText: 'Invite email',
+                    ),
+                  ),
                   _DropdownField<int>(
                     label: 'Inviting admin',
                     value: inviterUserId,
                     values: users.map((u) => u['id'] as int).toList(),
-                    labelFor: (id) => users.firstWhere((u) => u['id'] == id)['email'].toString(),
+                    labelFor: (id) => users
+                        .firstWhere((u) => u['id'] == id)['email']
+                        .toString(),
                     onChanged: (v) => setState(() => inviterUserId = v),
                   ),
                   _DropdownField(
@@ -1892,26 +2534,47 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     value: inviteRole,
                     values: const ['admin', 'read_only'],
                     labelFor: (role) => role == 'admin' ? 'Admin' : 'Read only',
-                    onChanged: (v) => setState(() => inviteRole = v ?? inviteRole),
+                    onChanged: (v) =>
+                        setState(() => inviteRole = v ?? inviteRole),
                   ),
                   _SubmitButton(
                     saving: saving,
                     label: 'Create Invitation',
-                    onPressed: !widget.canEdit || inviterUserId == null ? null : _invite,
+                    onPressed: !widget.canEdit || inviterUserId == null
+                        ? null
+                        : _invite,
                   ),
                 ],
               ),
               const SizedBox(height: 18),
               _SectionTitle('Users'),
               _DataCard(
-                emptyText: snapshot.connectionState == ConnectionState.waiting ? 'Loading users' : 'No users yet',
-                children: users.map((u) => _ListRow(title: u['email'].toString(), subtitle: u['display_name'].toString(), trailing: '#${u['id']}')).toList(),
+                emptyText: snapshot.connectionState == ConnectionState.waiting
+                    ? 'Loading users'
+                    : 'No users yet',
+                children: users
+                    .map(
+                      (u) => _ListRow(
+                        title: u['email'].toString(),
+                        subtitle: u['display_name'].toString(),
+                        trailing: '#${u['id']}',
+                      ),
+                    )
+                    .toList(),
               ),
               const SizedBox(height: 18),
               _SectionTitle('Invitations'),
               _DataCard(
                 emptyText: 'No invitations yet',
-                children: invitations.map((i) => _ListRow(title: i['email'].toString(), subtitle: '${i['role']}  |  ${i['status']}', trailing: '#${i['id']}')).toList(),
+                children: invitations
+                    .map(
+                      (i) => _ListRow(
+                        title: i['email'].toString(),
+                        subtitle: '${i['role']}  |  ${i['status']}',
+                        trailing: '#${i['id']}',
+                      ),
+                    )
+                    .toList(),
               ),
               const SizedBox(height: 22),
               const BuildInfoText(),
@@ -1925,7 +2588,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _createUser() async {
     setState(() => saving = true);
     try {
-      await widget.api.post('/api/users', {'email': userEmail.text, 'display_name': userName.text, 'password': userPassword.text});
+      await widget.api.post('/api/users', {
+        'email': userEmail.text,
+        'display_name': userName.text,
+        'password': userPassword.text,
+      });
       userEmail.clear();
       userName.clear();
       userPassword.clear();
@@ -1943,11 +2610,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _invite() async {
     setState(() => saving = true);
     try {
-      await widget.api.post('/api/budget-profiles/${widget.selectedProfile['id']}/invitations', {
-        'email': inviteEmail.text,
-        'role': inviteRole,
-        'invited_by_user_id': inviterUserId,
-      });
+      await widget.api.post(
+        '/api/budget-profiles/${widget.selectedProfile['id']}/invitations',
+        {
+          'email': inviteEmail.text,
+          'role': inviteRole,
+          'invited_by_user_id': inviterUserId,
+        },
+      );
       inviteEmail.clear();
       reload();
       if (!mounted) return;
@@ -1967,12 +2637,22 @@ class _SettingsCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(14),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: children.map((child) => Padding(padding: const EdgeInsets.only(bottom: 12), child: child)).toList(),
+    return FocusTraversalGroup(
+      policy: ReadingOrderTraversalPolicy(),
+      child: Card(
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: children
+                .map(
+                  (child) => Padding(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    child: child,
+                  ),
+                )
+                .toList(),
+          ),
         ),
       ),
     );
@@ -1990,10 +2670,26 @@ class MobileMoreScreen extends StatelessWidget {
       child: ListView(
         padding: const EdgeInsets.all(14),
         children: [
-          _MoreTile(icon: Icons.payments_outlined, title: 'Paycheck Setup', onTap: () => goTo(1)),
-          _MoreTile(icon: Icons.savings_outlined, title: 'Chunks', onTap: () => goTo(3)),
-          _MoreTile(icon: Icons.receipt_long_outlined, title: 'Transactions', onTap: () => goTo(6)),
-          _MoreTile(icon: Icons.settings_outlined, title: 'Settings', onTap: () => goTo(7)),
+          _MoreTile(
+            icon: Icons.payments_outlined,
+            title: 'Paycheck Setup',
+            onTap: () => goTo(1),
+          ),
+          _MoreTile(
+            icon: Icons.savings_outlined,
+            title: 'Chunks',
+            onTap: () => goTo(3),
+          ),
+          _MoreTile(
+            icon: Icons.receipt_long_outlined,
+            title: 'Transactions',
+            onTap: () => goTo(6),
+          ),
+          _MoreTile(
+            icon: Icons.settings_outlined,
+            title: 'Settings',
+            onTap: () => goTo(7),
+          ),
         ],
       ),
     );
@@ -2001,7 +2697,11 @@ class MobileMoreScreen extends StatelessWidget {
 }
 
 class _MoreTile extends StatelessWidget {
-  const _MoreTile({required this.icon, required this.title, required this.onTap});
+  const _MoreTile({
+    required this.icon,
+    required this.title,
+    required this.onTap,
+  });
   final IconData icon;
   final String title;
   final VoidCallback onTap;
@@ -2021,7 +2721,14 @@ class _MoreTile extends StatelessWidget {
 }
 
 class _EntityDropdown extends StatelessWidget {
-  const _EntityDropdown({required this.label, required this.type, required this.id, required this.accounts, required this.chunks, required this.onChanged});
+  const _EntityDropdown({
+    required this.label,
+    required this.type,
+    required this.id,
+    required this.accounts,
+    required this.chunks,
+    required this.onChanged,
+  });
   final String label;
   final String type;
   final int? id;
@@ -2036,14 +2743,19 @@ class _EntityDropdown extends StatelessWidget {
       label: label,
       value: id,
       values: values.map((v) => v['id'] as int).toList(),
-      labelFor: (value) => values.firstWhere((v) => v['id'] == value)['name'].toString(),
+      labelFor: (value) =>
+          values.firstWhere((v) => v['id'] == value)['name'].toString(),
       onChanged: onChanged,
     );
   }
 }
 
 class _Page extends StatelessWidget {
-  const _Page({required this.title, required this.child, this.actions = const []});
+  const _Page({
+    required this.title,
+    required this.child,
+    this.actions = const [],
+  });
   final String title;
   final Widget child;
   final List<Widget> actions;
@@ -2055,11 +2767,24 @@ class _Page extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Container(
-          padding: EdgeInsets.fromLTRB(isPhone ? 14 : 20, isPhone ? 12 : 18, isPhone ? 14 : 20, isPhone ? 10 : 14),
+          padding: EdgeInsets.fromLTRB(
+            isPhone ? 14 : 20,
+            isPhone ? 12 : 18,
+            isPhone ? 14 : 20,
+            isPhone ? 10 : 14,
+          ),
           color: Colors.white,
           child: Row(
             children: [
-              Expanded(child: Text(title, style: TextStyle(fontSize: isPhone ? 22 : 24, fontWeight: FontWeight.w800))),
+              Expanded(
+                child: Text(
+                  title,
+                  style: TextStyle(
+                    fontSize: isPhone ? 22 : 24,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
               ...actions,
             ],
           ),
@@ -2096,7 +2821,11 @@ class _ResponsiveGrid extends StatelessWidget {
 }
 
 class _MetricCard extends StatelessWidget {
-  const _MetricCard({required this.label, required this.value, required this.icon});
+  const _MetricCard({
+    required this.label,
+    required this.value,
+    required this.icon,
+  });
   final String label;
   final String value;
   final IconData icon;
@@ -2115,8 +2844,21 @@ class _MetricCard extends StatelessWidget {
                 mainAxisAlignment: MainAxisAlignment.center,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(label, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Color(0xFF667085))),
-                  Text(value, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800)),
+                  Text(
+                    label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(color: Color(0xFF667085)),
+                  ),
+                  Text(
+                    value,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
                 ],
               ),
             ),
@@ -2136,14 +2878,24 @@ class _DataCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return Card(
       child: children.isEmpty
-          ? Padding(padding: const EdgeInsets.all(18), child: Text(emptyText, style: const TextStyle(color: Color(0xFF667085))))
+          ? Padding(
+              padding: const EdgeInsets.all(18),
+              child: Text(
+                emptyText,
+                style: const TextStyle(color: Color(0xFF667085)),
+              ),
+            )
           : Column(children: children),
     );
   }
 }
 
 class _ListRow extends StatelessWidget {
-  const _ListRow({required this.title, required this.subtitle, required this.trailing});
+  const _ListRow({
+    required this.title,
+    required this.subtitle,
+    required this.trailing,
+  });
   final String title;
   final String subtitle;
   final String trailing;
@@ -2151,9 +2903,17 @@ class _ListRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return ListTile(
-      title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w700)),
+      title: Text(
+        title,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: const TextStyle(fontWeight: FontWeight.w700),
+      ),
       subtitle: Text(subtitle, maxLines: 1, overflow: TextOverflow.ellipsis),
-      trailing: Text(trailing, style: const TextStyle(fontWeight: FontWeight.w800)),
+      trailing: Text(
+        trailing,
+        style: const TextStyle(fontWeight: FontWeight.w800),
+      ),
     );
   }
 }
@@ -2168,12 +2928,27 @@ class _FormCard extends StatelessWidget {
     return ListView(
       padding: EdgeInsets.all(isPhone ? 14 : 20),
       children: [
-        ConstrainedBox(
-          constraints: BoxConstraints(maxWidth: isPhone ? double.infinity : 620),
-          child: Card(
-            child: Padding(
-              padding: EdgeInsets.all(isPhone ? 14 : 16),
-              child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: children.map((child) => Padding(padding: const EdgeInsets.only(bottom: 12), child: child)).toList()),
+        FocusTraversalGroup(
+          policy: ReadingOrderTraversalPolicy(),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxWidth: isPhone ? double.infinity : 620,
+            ),
+            child: Card(
+              child: Padding(
+                padding: EdgeInsets.all(isPhone ? 14 : 16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: children
+                      .map(
+                        (child) => Padding(
+                          padding: const EdgeInsets.only(bottom: 12),
+                          child: child,
+                        ),
+                      )
+                      .toList(),
+                ),
+              ),
             ),
           ),
         ),
@@ -2187,9 +2962,12 @@ class _SectionTitle extends StatelessWidget {
   final String text;
   @override
   Widget build(BuildContext context) => Padding(
-        padding: const EdgeInsets.only(bottom: 8),
-        child: Text(text, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
-      );
+    padding: const EdgeInsets.only(bottom: 8),
+    child: Text(
+      text,
+      style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+    ),
+  );
 }
 
 class _Notice extends StatelessWidget {
@@ -2197,10 +2975,14 @@ class _Notice extends StatelessWidget {
   final String text;
   @override
   Widget build(BuildContext context) => Container(
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(color: const Color(0xFFFFFAEB), borderRadius: BorderRadius.circular(8), border: Border.all(color: const Color(0xFFFEC84B))),
-        child: Text(text),
-      );
+    padding: const EdgeInsets.all(12),
+    decoration: BoxDecoration(
+      color: const Color(0xFFFFFAEB),
+      borderRadius: BorderRadius.circular(8),
+      border: Border.all(color: const Color(0xFFFEC84B)),
+    ),
+    child: Text(text),
+  );
 }
 
 class _MoneyField extends StatelessWidget {
@@ -2212,14 +2994,21 @@ class _MoneyField extends StatelessWidget {
   Widget build(BuildContext context) {
     return TextField(
       controller: controller,
-      keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true),
+      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+      inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'[0-9.]'))],
       decoration: InputDecoration(labelText: label, prefixText: r'$ '),
     );
   }
 }
 
 class _DropdownField<T> extends StatelessWidget {
-  const _DropdownField({required this.label, required this.value, required this.values, required this.onChanged, this.labelFor});
+  const _DropdownField({
+    required this.label,
+    required this.value,
+    required this.values,
+    required this.onChanged,
+    this.labelFor,
+  });
   final String label;
   final T? value;
   final List<T> values;
@@ -2231,14 +3020,25 @@ class _DropdownField<T> extends StatelessWidget {
     return DropdownButtonFormField<T>(
       initialValue: values.contains(value) ? value : null,
       decoration: InputDecoration(labelText: label),
-      items: values.map((v) => DropdownMenuItem(value: v, child: Text(labelFor?.call(v) ?? v.toString()))).toList(),
+      items: values
+          .map(
+            (v) => DropdownMenuItem(
+              value: v,
+              child: Text(labelFor?.call(v) ?? v.toString()),
+            ),
+          )
+          .toList(),
       onChanged: values.isEmpty ? null : onChanged,
     );
   }
 }
 
 class _SubmitButton extends StatelessWidget {
-  const _SubmitButton({required this.saving, required this.label, required this.onPressed});
+  const _SubmitButton({
+    required this.saving,
+    required this.label,
+    required this.onPressed,
+  });
   final bool saving;
   final String label;
   final VoidCallback? onPressed;
@@ -2247,7 +3047,12 @@ class _SubmitButton extends StatelessWidget {
   Widget build(BuildContext context) {
     return FilledButton.icon(
       onPressed: saving ? null : onPressed,
-      icon: saving ? const SizedBox.square(dimension: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.check),
+      icon: saving
+          ? const SizedBox.square(
+              dimension: 18,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            )
+          : const Icon(Icons.check),
       label: Text(label),
     );
   }
@@ -2270,7 +3075,11 @@ class _ErrorView extends StatelessWidget {
             const SizedBox(height: 12),
             Text(message, textAlign: TextAlign.center),
             const SizedBox(height: 12),
-            FilledButton.icon(onPressed: onRetry, icon: const Icon(Icons.refresh), label: const Text('Retry')),
+            FilledButton.icon(
+              onPressed: onRetry,
+              icon: const Icon(Icons.refresh),
+              label: const Text('Retry'),
+            ),
           ],
         ),
       ),
@@ -2278,9 +3087,16 @@ class _ErrorView extends StatelessWidget {
   }
 }
 
-Future<void> showAccountDialog(BuildContext context, BudgetApi api, VoidCallback refresh, {Map<String, dynamic>? account}) async {
+Future<void> showAccountDialog(
+  BuildContext context,
+  BudgetApi api,
+  VoidCallback refresh, {
+  Map<String, dynamic>? account,
+}) async {
   final name = TextEditingController(text: account?['name']?.toString() ?? '');
-  final balance = TextEditingController(text: account?['balance']?.toString() ?? '0');
+  final balance = TextEditingController(
+    text: account?['balance']?.toString() ?? '0',
+  );
   var type = account?['type']?.toString() ?? 'checking';
   var sourceMode = account?['source_mode']?.toString() ?? 'manual';
   final isEditing = account != null;
@@ -2292,15 +3108,24 @@ Future<void> showAccountDialog(BuildContext context, BudgetApi api, VoidCallback
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            TextField(controller: name, decoration: const InputDecoration(labelText: 'Name')),
+            TextField(
+              controller: name,
+              decoration: const InputDecoration(labelText: 'Name'),
+            ),
             const SizedBox(height: 12),
-            _DropdownField(label: 'Type', value: type, values: const ['checking', 'savings', 'cash', 'other'], onChanged: (v) => setState(() => type = v ?? type)),
+            _DropdownField(
+              label: 'Type',
+              value: type,
+              values: const ['checking', 'savings', 'cash', 'other'],
+              onChanged: (v) => setState(() => type = v ?? type),
+            ),
             const SizedBox(height: 12),
             _DropdownField(
               label: 'Balance management',
               value: sourceMode,
               values: const ['manual', 'bank_connected'],
-              labelFor: (value) => value == 'manual' ? 'Manual' : 'Bank connected',
+              labelFor: (value) =>
+                  value == 'manual' ? 'Manual' : 'Bank connected',
               onChanged: (v) => setState(() => sourceMode = v ?? sourceMode),
             ),
             const SizedBox(height: 12),
@@ -2308,7 +3133,10 @@ Future<void> showAccountDialog(BuildContext context, BudgetApi api, VoidCallback
           ],
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
           FilledButton(
             onPressed: () async {
               final payload = {
@@ -2334,15 +3162,28 @@ Future<void> showAccountDialog(BuildContext context, BudgetApi api, VoidCallback
   );
 }
 
-Future<void> deleteAccount(BuildContext context, BudgetApi api, VoidCallback refresh, Map<String, dynamic> account) async {
+Future<void> deleteAccount(
+  BuildContext context,
+  BudgetApi api,
+  VoidCallback refresh,
+  Map<String, dynamic> account,
+) async {
   final confirmed = await showDialog<bool>(
     context: context,
     builder: (context) => AlertDialog(
       title: const Text('Delete Account'),
-      content: Text('Delete ${account['name']}? Accounts with chunks or activity cannot be deleted.'),
+      content: Text(
+        'Delete ${account['name']}? Accounts with chunks or activity cannot be deleted.',
+      ),
       actions: [
-        TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-        FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Delete')),
+        TextButton(
+          onPressed: () => Navigator.pop(context, false),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(context, true),
+          child: const Text('Delete'),
+        ),
       ],
     ),
   );
@@ -2356,7 +3197,12 @@ Future<void> deleteAccount(BuildContext context, BudgetApi api, VoidCallback ref
   }
 }
 
-Future<void> showChunkDialog(BuildContext context, BudgetApi api, VoidCallback refresh, List<Map<String, dynamic>> accounts) async {
+Future<void> showChunkDialog(
+  BuildContext context,
+  BudgetApi api,
+  VoidCallback refresh,
+  List<Map<String, dynamic>> accounts,
+) async {
   final name = TextEditingController();
   final amount = TextEditingController();
   var accountId = accounts.first['id'] as int;
@@ -2368,13 +3214,17 @@ Future<void> showChunkDialog(BuildContext context, BudgetApi api, VoidCallback r
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            TextField(controller: name, decoration: const InputDecoration(labelText: 'Name')),
+            TextField(
+              controller: name,
+              decoration: const InputDecoration(labelText: 'Name'),
+            ),
             const SizedBox(height: 12),
             _DropdownField<int>(
               label: 'Account',
               value: accountId,
               values: accounts.map((a) => a['id'] as int).toList(),
-              labelFor: (id) => accounts.firstWhere((a) => a['id'] == id)['name'].toString(),
+              labelFor: (id) =>
+                  accounts.firstWhere((a) => a['id'] == id)['name'].toString(),
               onChanged: (v) => setState(() => accountId = v ?? accountId),
             ),
             const SizedBox(height: 12),
@@ -2382,7 +3232,10 @@ Future<void> showChunkDialog(BuildContext context, BudgetApi api, VoidCallback r
           ],
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
           FilledButton(
             onPressed: () async {
               await api.post('/api/chunks', {
@@ -2411,7 +3264,12 @@ List<Map<String, dynamic>> listOfMaps(dynamic value) {
 }
 
 double parseMoney(String value) {
-  final normalized = value.replaceAll(',', '').replaceAll(r'$', '').replaceAll('(', '-').replaceAll(')', '').trim();
+  final normalized = value
+      .replaceAll(',', '')
+      .replaceAll(r'$', '')
+      .replaceAll('(', '-')
+      .replaceAll(')', '')
+      .trim();
   return double.tryParse(normalized) ?? 0;
 }
 
@@ -2423,7 +3281,9 @@ String movementLabel(String value) {
 }
 
 String money(dynamic value) {
-  final number = value is num ? value : num.tryParse(value?.toString() ?? '') ?? 0;
+  final number = value is num
+      ? value
+      : num.tryParse(value?.toString() ?? '') ?? 0;
   if (number == 0) return r'$ -';
   final formatted = NumberFormat('#,##0.00', 'en_US').format(number.abs());
   return number < 0 ? '\$ ($formatted)' : '\$ $formatted';
