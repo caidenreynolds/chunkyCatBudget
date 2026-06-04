@@ -874,7 +874,7 @@ class _PhoneShell extends StatelessWidget {
         destinations: const [
           NavigationDestination(icon: Icon(Icons.dashboard_outlined), selectedIcon: Icon(Icons.dashboard), label: 'Home'),
           NavigationDestination(icon: Icon(Icons.add_circle_outline), selectedIcon: Icon(Icons.add_circle), label: 'Paycheck'),
-          NavigationDestination(icon: Icon(Icons.swap_horiz_outlined), selectedIcon: Icon(Icons.swap_horiz), label: 'Move'),
+          NavigationDestination(icon: Icon(Icons.swap_horiz_outlined), selectedIcon: Icon(Icons.swap_horiz), label: 'Transfer'),
           NavigationDestination(icon: Icon(Icons.account_balance_wallet_outlined), selectedIcon: Icon(Icons.account_balance_wallet), label: 'Accounts'),
           NavigationDestination(icon: Icon(Icons.menu), selectedIcon: Icon(Icons.menu_open), label: 'More'),
         ],
@@ -1110,7 +1110,7 @@ class _DashboardActions extends StatelessWidget {
         runSpacing: 12,
         children: [
           FilledButton.icon(onPressed: () => goTo(4), icon: const Icon(Icons.add), label: const Text('Add Paycheck')),
-          OutlinedButton.icon(onPressed: () => goTo(5), icon: const Icon(Icons.swap_horiz), label: const Text('Move Money')),
+          OutlinedButton.icon(onPressed: () => goTo(5), icon: const Icon(Icons.swap_horiz), label: const Text('Add Transfer')),
           OutlinedButton.icon(onPressed: () => goTo(2), icon: const Icon(Icons.add_card), label: const Text('Account')),
           OutlinedButton.icon(onPressed: () => goTo(3), icon: const Icon(Icons.playlist_add), label: const Text('Chunk')),
         ],
@@ -1134,7 +1134,7 @@ class _DashboardActions extends StatelessWidget {
           child: OutlinedButton.icon(
             onPressed: () => goTo(5),
             icon: const Icon(Icons.swap_horiz),
-            label: const Text('Move Money'),
+            label: const Text('Add Transfer'),
           ),
         ),
         const SizedBox(height: 10),
@@ -1654,7 +1654,7 @@ class _TransfersScreenState extends State<TransfersScreen> {
       child: ListView(
         padding: EdgeInsets.all(MediaQuery.sizeOf(context).width < 600 ? 14 : 20),
         children: [
-          const _Notice('Transfers move money between tracked accounts, unallocated balances, and chunks. Transactions record money entering or leaving an account from an outside source.'),
+          const _Notice('Use Add Transfer to move existing budget money between unallocated balances and chunks. For unallocated to chunk, choose the account as the source and a chunk in that same account as the destination.'),
           const SizedBox(height: 14),
           _FormCard(
             children: [
@@ -1688,7 +1688,7 @@ class _TransfersScreenState extends State<TransfersScreen> {
               ],
               _MoneyField(label: 'Amount', controller: amount),
               TextField(controller: note, decoration: const InputDecoration(labelText: 'Note')),
-              _SubmitButton(saving: saving, label: 'Log Movement', onPressed: !widget.canEdit || sourceId == null ? null : _save),
+              _SubmitButton(saving: saving, label: 'Add Transfer', onPressed: !widget.canEdit || sourceId == null ? null : _save),
             ],
           ),
           const SizedBox(height: 20),
