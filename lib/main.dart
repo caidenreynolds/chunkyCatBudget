@@ -2170,6 +2170,7 @@ class _TransfersScreenState extends State<TransfersScreen> {
           ),
           const SizedBox(height: 14),
           _FormCard(
+            scrollable: false,
             children: [
               _DropdownField(
                 label: 'Transfer type',
@@ -2919,40 +2920,41 @@ class _ListRow extends StatelessWidget {
 }
 
 class _FormCard extends StatelessWidget {
-  const _FormCard({required this.children});
+  const _FormCard({required this.children, this.scrollable = true});
   final List<Widget> children;
+  final bool scrollable;
 
   @override
   Widget build(BuildContext context) {
     final isPhone = MediaQuery.sizeOf(context).width < 600;
-    return ListView(
-      padding: EdgeInsets.all(isPhone ? 14 : 20),
-      children: [
-        FocusTraversalGroup(
-          policy: ReadingOrderTraversalPolicy(),
-          child: ConstrainedBox(
-            constraints: BoxConstraints(
-              maxWidth: isPhone ? double.infinity : 620,
-            ),
-            child: Card(
-              child: Padding(
-                padding: EdgeInsets.all(isPhone ? 14 : 16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: children
-                      .map(
-                        (child) => Padding(
-                          padding: const EdgeInsets.only(bottom: 12),
-                          child: child,
-                        ),
-                      )
-                      .toList(),
-                ),
-              ),
+    final card = FocusTraversalGroup(
+      policy: ReadingOrderTraversalPolicy(),
+      child: ConstrainedBox(
+        constraints: BoxConstraints(maxWidth: isPhone ? double.infinity : 620),
+        child: Card(
+          child: Padding(
+            padding: EdgeInsets.all(isPhone ? 14 : 16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: children
+                  .map(
+                    (child) => Padding(
+                      padding: const EdgeInsets.only(bottom: 12),
+                      child: child,
+                    ),
+                  )
+                  .toList(),
             ),
           ),
         ),
-      ],
+      ),
+    );
+
+    if (!scrollable) return card;
+
+    return ListView(
+      padding: EdgeInsets.all(isPhone ? 14 : 20),
+      children: [card],
     );
   }
 }
