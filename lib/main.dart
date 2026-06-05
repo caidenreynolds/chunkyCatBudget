@@ -222,6 +222,7 @@ class _BudgetHomeState extends State<BudgetHome> {
     ('Transfers', Icons.swap_horiz_outlined),
     ('Transactions', Icons.receipt_long_outlined),
     ('Settings', Icons.settings_outlined),
+    ('Budget Overview', Icons.fact_check_outlined),
   ];
 
   Future<Map<String, dynamic>> _loadSummary() async {
@@ -1032,7 +1033,7 @@ class _PhoneShell extends StatelessWidget {
     required this.child,
   });
 
-  static const routes = [0, 4, 5, 2, 8];
+  static const routes = [0, 4, 5, 2, 9];
 
   final int selected;
   final ValueChanged<int> onSelect;
@@ -1302,7 +1303,8 @@ class _ScreenHost extends StatelessWidget {
         refresh: refresh,
         canEdit: canEdit,
       ),
-      8 => MobileMoreScreen(goTo: goTo),
+      8 => BudgetOverviewScreen(data: data),
+      9 => MobileMoreScreen(goTo: goTo),
       _ => SettingsScreen(
         api: api,
         selectedProfile: selectedProfile,
@@ -1454,6 +1456,11 @@ class _DashboardActions extends StatelessWidget {
             icon: const Icon(Icons.playlist_add),
             label: const Text('Chunk'),
           ),
+          OutlinedButton.icon(
+            onPressed: () => goTo(8),
+            icon: const Icon(Icons.fact_check_outlined),
+            label: const Text('Overview'),
+          ),
         ],
       );
     }
@@ -1476,6 +1483,15 @@ class _DashboardActions extends StatelessWidget {
             onPressed: () => goTo(5),
             icon: const Icon(Icons.swap_horiz),
             label: const Text('Add Transfer'),
+          ),
+        ),
+        const SizedBox(height: 10),
+        SizedBox(
+          height: 50,
+          child: OutlinedButton.icon(
+            onPressed: () => goTo(8),
+            icon: const Icon(Icons.fact_check_outlined),
+            label: const Text('Overview'),
           ),
         ),
         const SizedBox(height: 10),
@@ -1505,6 +1521,110 @@ class _DashboardActions extends StatelessWidget {
           ],
         ),
       ],
+    );
+  }
+}
+
+class BudgetOverviewScreen extends StatelessWidget {
+  const BudgetOverviewScreen({super.key, required this.data});
+  final Map<String, dynamic> data;
+
+  @override
+  Widget build(BuildContext context) {
+    final isPhone = MediaQuery.sizeOf(context).width < 600;
+    final profile = data['paycheck_profile'] is Map
+        ? Map<String, dynamic>.from(data['paycheck_profile'] as Map)
+        : <String, dynamic>{};
+    final chunks = listOfMaps(data['chunks']);
+    final activeChunks = chunks
+        .where((chunk) => chunk['is_active'] != false)
+        .toList();
+    final expectedPay = parseMoney('${profile['net_pay_amount'] ?? 0}');
+    final chunkTotal = activeChunks.fold<double>(
+      0,
+      (total, chunk) =>
+          total + parseMoney('${chunk['amount_per_paycheck'] ?? 0}'),
+    );
+    final leftover = expectedPay - chunkTotal;
+    final frequency = profile['pay_frequency']?.toString();
+
+    return _Page(
+      title: 'Budget Overview',
+      child: ListView(
+        padding: EdgeInsets.all(isPhone ? 14 : 20),
+        children: [
+          _Notice(
+            expectedPay <= 0
+                ? 'Set your expected net pay in Paycheck Setup to compare paycheck income against chunk deductions.'
+                : 'Expected paycheck minus every active chunk deduction shows the leftover unallocated amount for each paycheck.',
+          ),
+          const SizedBox(height: 16),
+          _ResponsiveGrid(
+            minWidth: 210,
+            children: [
+              _MetricCard(
+                label: 'Expected Paycheck',
+                value: money(expectedPay),
+                icon: Icons.payments_outlined,
+              ),
+              _MetricCard(
+                label: 'Chunk Deductions',
+                value: money(chunkTotal),
+                icon: Icons.savings_outlined,
+              ),
+              _MetricCard(
+                label: 'Leftover',
+                value: money(leftover),
+                icon: leftover < 0
+                    ? Icons.warning_amber_outlined
+                    : Icons.inventory_2_outlined,
+              ),
+            ],
+          ),
+          const SizedBox(height: 20),
+          if (leftover < 0)
+            const _Notice(
+              'Your active chunks are over the expected paycheck amount. Reduce chunk amounts or increase expected pay before using this paycheck plan.',
+            ),
+          if (leftover < 0) const SizedBox(height: 20),
+          _SectionTitle('Paycheck Plan'),
+          _DataCard(
+            emptyText: 'No paycheck profile yet',
+            children: [
+              _ListRow(
+                title: 'Expected net pay',
+                subtitle: frequency == null
+                    ? 'Paycheck Setup'
+                    : movementLabel(frequency),
+                trailing: money(expectedPay),
+              ),
+              _ListRow(
+                title: 'Minus active chunks',
+                subtitle:
+                    '${activeChunks.length} chunk${activeChunks.length == 1 ? '' : 's'}',
+                trailing: money(chunkTotal),
+              ),
+              _ListRow(
+                title: leftover < 0 ? 'Over budget' : 'Leftover unallocated',
+                subtitle: 'Expected paycheck result',
+                trailing: money(leftover),
+              ),
+            ],
+          ),
+          const SizedBox(height: 20),
+          _SectionTitle('Chunk Deductions'),
+          _DataCard(
+            emptyText: 'No active chunks yet',
+            children: activeChunks.map((chunk) {
+              return _ListRow(
+                title: chunk['name'].toString(),
+                subtitle: chunk['account_name']?.toString() ?? 'Account',
+                trailing: money(chunk['amount_per_paycheck']),
+              );
+            }).toList(),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -2835,6 +2955,11 @@ class MobileMoreScreen extends StatelessWidget {
             onTap: () => goTo(1),
           ),
           _MoreTile(
+            icon: Icons.fact_check_outlined,
+            title: 'Budget Overview',
+            onTap: () => goTo(8),
+          ),
+          _MoreTile(
             icon: Icons.savings_outlined,
             title: 'Chunks',
             onTap: () => goTo(3),
@@ -3071,10 +3196,19 @@ class _ListRow extends StatelessWidget {
         style: const TextStyle(fontWeight: FontWeight.w700),
       ),
       subtitle: Text(subtitle, maxLines: 1, overflow: TextOverflow.ellipsis),
-      trailing: Text(
-        trailing,
-        style: const TextStyle(fontWeight: FontWeight.w800),
-      ),
+      trailing: onTap == null
+          ? Text(trailing, style: const TextStyle(fontWeight: FontWeight.w800))
+          : Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  trailing,
+                  style: const TextStyle(fontWeight: FontWeight.w800),
+                ),
+                const SizedBox(width: 8),
+                const Icon(Icons.chevron_right, size: 20),
+              ],
+            ),
       onTap: onTap,
     );
   }
