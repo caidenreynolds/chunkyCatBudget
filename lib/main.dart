@@ -2138,6 +2138,19 @@ class _TransfersScreenState extends State<TransfersScreen> {
   var saving = false;
 
   @override
+  void initState() {
+    super.initState();
+    amount.addListener(() => setState(() {}));
+  }
+
+  @override
+  void dispose() {
+    amount.dispose();
+    note.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final accounts = listOfMaps(widget.data['accounts']);
     final manualAccounts = accounts
@@ -2160,10 +2173,16 @@ class _TransfersScreenState extends State<TransfersScreen> {
 
     final isPhone = MediaQuery.sizeOf(context).width < 600;
     final requiresDestination = destinationType != 'outside_account';
+    final source = _selectedSource(accounts, chunks);
+    final destination = _selectedDestination(accounts, chunks);
+    final sourceAvailable = _sourceAvailable(source);
+    final transferAmount = parseMoney(amount.text);
     final canAddTransfer =
         widget.canEdit &&
         sourceId != null &&
         (!requiresDestination || destinationId != null) &&
+        transferAmount > 0 &&
+        transferAmount <= sourceAvailable &&
         !saving;
 
     final formFields = [
@@ -2193,6 +2212,7 @@ class _TransfersScreenState extends State<TransfersScreen> {
           chunks: chunks,
           onChanged: (v) => setState(() => sourceId = v),
         ),
+        if (source != null) _BalanceHint(text: _accountBalanceSummary(source)),
         _EntityDropdown(
           label: 'To manual account',
           type: 'unallocated',
@@ -2201,6 +2221,8 @@ class _TransfersScreenState extends State<TransfersScreen> {
           chunks: chunks,
           onChanged: (v) => setState(() => destinationId = v),
         ),
+        if (destination != null)
+          _BalanceHint(text: _accountBalanceSummary(destination)),
       ] else ...[
         _DropdownField(
           label: 'From',
@@ -2219,6 +2241,7 @@ class _TransfersScreenState extends State<TransfersScreen> {
           chunks: chunks,
           onChanged: (v) => setState(() => sourceId = v),
         ),
+        if (source != null) _BalanceHint(text: _sourceBalanceSummary(source)),
         _DropdownField(
           label: 'To',
           value: destinationType,
@@ -2238,6 +2261,8 @@ class _TransfersScreenState extends State<TransfersScreen> {
             chunks: chunks,
             onChanged: (v) => setState(() => destinationId = v),
           ),
+        if (destination != null)
+          _BalanceHint(text: _destinationBalanceSummary(destination)),
       ],
       _MoneyField(label: 'Amount', controller: amount),
       TextField(
@@ -2274,29 +2299,34 @@ class _TransfersScreenState extends State<TransfersScreen> {
               'Use Add Transfer to move existing budget money between unallocated balances and chunks. For unallocated to chunk, choose the account as the source and a chunk in that same account as the destination.',
             ),
             const SizedBox(height: 14),
-            ConstrainedBox(
-              constraints: BoxConstraints(
-                maxWidth: isPhone ? double.infinity : 620,
-              ),
-              child: FocusTraversalGroup(
-                policy: ReadingOrderTraversalPolicy(),
-                child: Card(
-                  child: Padding(
-                    padding: EdgeInsets.all(isPhone ? 14 : 16),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: formFields
-                          .map(
-                            (child) => Padding(
-                              padding: const EdgeInsets.only(bottom: 12),
-                              child: child,
-                            ),
-                          )
-                          .toList(),
+            LayoutBuilder(
+              builder: (context, constraints) {
+                return Align(
+                  alignment: Alignment.centerLeft,
+                  child: SizedBox(
+                    width: isPhone ? double.infinity : constraints.maxWidth,
+                    child: FocusTraversalGroup(
+                      policy: ReadingOrderTraversalPolicy(),
+                      child: Card(
+                        child: Padding(
+                          padding: EdgeInsets.all(isPhone ? 14 : 16),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: formFields
+                                .map(
+                                  (child) => Padding(
+                                    padding: const EdgeInsets.only(bottom: 12),
+                                    child: child,
+                                  ),
+                                )
+                                .toList(),
+                          ),
+                        ),
+                      ),
                     ),
                   ),
-                ),
-              ),
+                );
+              },
             ),
             const SizedBox(height: 20),
             _SectionTitle('Movement Log'),
@@ -2307,8 +2337,12 @@ class _TransfersScreenState extends State<TransfersScreen> {
               ) {
                 return _ListRow(
                   title: '${m['source_type']} to ${m['destination_type']}',
-                  subtitle: m['note'].toString(),
+                  subtitle: m['note'].toString().isEmpty
+                      ? formatDateTime(m['created_at'])
+                      : m['note'].toString(),
                   trailing: money(m['amount']),
+                  onTap: () =>
+                      _showTransferDetails(context, m, accounts, chunks),
                 );
               }).toList(),
             ),
@@ -2319,6 +2353,24 @@ class _TransfersScreenState extends State<TransfersScreen> {
   }
 
   Future<void> _save() async {
+    final sourceAvailable = _sourceAvailable(
+      _selectedSource(
+        listOfMaps(widget.data['accounts']),
+        listOfMaps(widget.data['chunks']),
+      ),
+    );
+    final transferAmount = parseMoney(amount.text);
+    if (transferAmount <= 0) {
+      toast(context, 'Enter a transfer amount greater than zero.');
+      return;
+    }
+    if (transferAmount > sourceAvailable) {
+      toast(
+        context,
+        'Transfer amount is greater than the source amount available.',
+      );
+      return;
+    }
     setState(() => saving = true);
     try {
       await widget.api.post('/api/money-movements', {
@@ -2332,6 +2384,10 @@ class _TransfersScreenState extends State<TransfersScreen> {
         'amount': parseMoney(amount.text),
         'note': note.text,
       });
+      amount.clear();
+      note.clear();
+      sourceId = null;
+      destinationId = null;
       widget.refresh();
       if (!mounted) return;
       toast(context, 'Movement logged');
@@ -2341,6 +2397,138 @@ class _TransfersScreenState extends State<TransfersScreen> {
     } finally {
       if (mounted) setState(() => saving = false);
     }
+  }
+
+  Map<String, dynamic>? _selectedSource(
+    List<Map<String, dynamic>> accounts,
+    List<Map<String, dynamic>> chunks,
+  ) {
+    if (sourceId == null) return null;
+    final values = sourceType == 'chunk' ? chunks : accounts;
+    return values.cast<Map<String, dynamic>?>().firstWhere(
+      (value) => value?['id'] == sourceId,
+      orElse: () => null,
+    );
+  }
+
+  Map<String, dynamic>? _selectedDestination(
+    List<Map<String, dynamic>> accounts,
+    List<Map<String, dynamic>> chunks,
+  ) {
+    if (destinationId == null || destinationType == 'outside_account') {
+      return null;
+    }
+    final values = destinationType == 'chunk' ? chunks : accounts;
+    return values.cast<Map<String, dynamic>?>().firstWhere(
+      (value) => value?['id'] == destinationId,
+      orElse: () => null,
+    );
+  }
+
+  double _sourceAvailable(Map<String, dynamic>? source) {
+    if (source == null) return 0;
+    if (sourceType == 'chunk') return parseMoney(source['balance'].toString());
+    return parseMoney(source['unallocated_balance'].toString());
+  }
+
+  String _sourceBalanceSummary(Map<String, dynamic> source) {
+    if (sourceType == 'chunk') {
+      return 'Available in ${source['name']}: ${money(source['balance'])}';
+    }
+    return _accountBalanceSummary(source);
+  }
+
+  String _destinationBalanceSummary(Map<String, dynamic> destination) {
+    if (destinationType == 'chunk') {
+      return 'Current ${destination['name']} balance: ${money(destination['balance'])}';
+    }
+    return _accountBalanceSummary(destination);
+  }
+
+  String _accountBalanceSummary(Map<String, dynamic> account) {
+    return 'Allocated ${money(account['allocated_balance'])}  |  Unallocated ${money(account['unallocated_balance'])}  |  Total ${money(account['balance'])}';
+  }
+
+  void _showTransferDetails(
+    BuildContext context,
+    Map<String, dynamic> movement,
+    List<Map<String, dynamic>> accounts,
+    List<Map<String, dynamic>> chunks,
+  ) {
+    showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Transfer Details'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _DetailLine(
+              label: 'From',
+              value: _movementEndpointName(
+                movement['source_type'],
+                movement['source_id'],
+                accounts,
+                chunks,
+              ),
+            ),
+            _DetailLine(
+              label: 'To',
+              value: _movementEndpointName(
+                movement['destination_type'],
+                movement['destination_id'],
+                accounts,
+                chunks,
+              ),
+            ),
+            _DetailLine(label: 'Amount', value: money(movement['amount'])),
+            _DetailLine(
+              label: 'Note',
+              value: movement['note'].toString().isEmpty
+                  ? 'None'
+                  : movement['note'].toString(),
+            ),
+            _DetailLine(
+              label: 'Date',
+              value: formatDateTime(movement['created_at']),
+            ),
+          ],
+        ),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _movementEndpointName(
+    dynamic type,
+    dynamic id,
+    List<Map<String, dynamic>> accounts,
+    List<Map<String, dynamic>> chunks,
+  ) {
+    final value = type?.toString() ?? '';
+    if (value == 'outside_account') return 'Outside account';
+    if (value == 'chunk') {
+      final chunk = chunks.cast<Map<String, dynamic>?>().firstWhere(
+        (item) => item?['id'] == id,
+        orElse: () => null,
+      );
+      return chunk == null ? 'Chunk #$id' : '${chunk['name']} chunk';
+    }
+    if (value == 'unallocated' || value == 'account') {
+      final account = accounts.cast<Map<String, dynamic>?>().firstWhere(
+        (item) => item?['id'] == id,
+        orElse: () => null,
+      );
+      return account == null
+          ? 'Account #$id unallocated'
+          : '${account['name']} unallocated';
+    }
+    return movementLabel(value);
   }
 }
 
@@ -2939,10 +3127,12 @@ class _ListRow extends StatelessWidget {
     required this.title,
     required this.subtitle,
     required this.trailing,
+    this.onTap,
   });
   final String title;
   final String subtitle;
   final String trailing;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
@@ -2958,6 +3148,7 @@ class _ListRow extends StatelessWidget {
         trailing,
         style: const TextStyle(fontWeight: FontWeight.w800),
       ),
+      onTap: onTap,
     );
   }
 }
@@ -3025,6 +3216,60 @@ class _Notice extends StatelessWidget {
     ),
     child: Text(text),
   );
+}
+
+class _BalanceHint extends StatelessWidget {
+  const _BalanceHint({required this.text});
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF2F4F7),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: const Color(0xFFE4E7EC)),
+      ),
+      child: Text(
+        text,
+        style: const TextStyle(
+          color: Color(0xFF344054),
+          fontSize: 13,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+    );
+  }
+}
+
+class _DetailLine extends StatelessWidget {
+  const _DetailLine({required this.label, required this.value});
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 72,
+            child: Text(
+              label,
+              style: const TextStyle(
+                color: Color(0xFF667085),
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+          Expanded(child: Text(value)),
+        ],
+      ),
+    );
+  }
 }
 
 class _MoneyField extends StatelessWidget {
@@ -3329,6 +3574,12 @@ String money(dynamic value) {
   if (number == 0) return r'$ -';
   final formatted = NumberFormat('#,##0.00', 'en_US').format(number.abs());
   return number < 0 ? '\$ ($formatted)' : '\$ $formatted';
+}
+
+String formatDateTime(dynamic value) {
+  final parsed = DateTime.tryParse(value?.toString() ?? '');
+  if (parsed == null) return value?.toString() ?? '';
+  return DateFormat('yyyy-MM-dd HH:mm').format(parsed.toLocal());
 }
 
 void toast(BuildContext context, String message) {
