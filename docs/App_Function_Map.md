@@ -1,0 +1,419 @@
+# ChunkyCat Budget App Function Map
+
+This document is a navigation guide for future development. It explains where the main app behavior lives, which screens exist, and which backend functions support each workflow.
+
+## Deployment And Cache Behavior
+
+Docker serves the Flutter web app through Nginx using `docker/nginx.conf`.
+
+Important no-cache routes:
+
+- `/`
+- `/index.html`
+- `/version.json`
+- `/flutter_bootstrap.js`
+- `/flutter_service_worker.js`
+- `/main.dart.js`
+- `/flutter.js`
+- `/manifest.json`
+- `/.last_build_id`
+
+Why this matters: Flutter web uses `flutter_bootstrap.js` to load `main.dart.js`. If `main.dart.js` is cached too aggressively, users can see an old UI even after the container updates. The app now forces fresh validation for the app shell and app bundle so end users should not need to clear browser cache after updates.
+
+Long-cache routes:
+
+- hashed/static assets such as images, fonts, CanvasKit, and wasm may still be cached normally.
+
+Build metadata:
+
+- Docker generates `build/web/version.json`.
+- GitHub Actions passes commit, build time, and run number into the Docker build.
+- Flutter displays this build info on login/create account/settings screens through `BuildInfoText`.
+
+## Frontend Entry Points
+
+File: `lib/main.dart`
+
+- `main()` starts the Flutter app.
+- `ChunkyCatBudgApp` configures Material theme, global focus traversal, and `BudgetHome`.
+- `BudgetApi` wraps HTTP calls and appends the active `profile_id` to profile-specific API paths.
+- `ApiException` and `errorMessage()` normalize API errors for user-facing snackbars.
+- `BuildInfo`, `loadBuildInfo()`, and `BuildInfoText` load and display `/version.json`.
+
+## Authentication And Profile Selection
+
+Frontend:
+
+- `AuthGateway` decides whether to show login/create-account/profile selection/signed-in app.
+- `LoginScreen` signs in with email/password.
+- `CreateAccountScreen` registers a new user.
+- `ProfileSelectionScreen` lists budget profiles the user can access, creates new profiles, supports select/reorder/delete mode, and passes the selected profile into the app.
+
+Backend:
+
+- `register()` handles `/api/register`.
+- `login()` handles `/api/login`.
+- `list_budget_profiles()` handles `/api/budget-profiles`.
+- `create_budget_profile()` handles `POST /api/budget-profiles`.
+- `reorder_budget_profiles()` handles `PUT /api/budget-profiles/reorder`.
+- `delete_budget_profile()` handles `DELETE /api/budget-profiles/{profile_id}`.
+- `list_budget_profile_members()`, `invite_budget_profile_member()`, `list_invitations()`, and `accept_invitation()` support shared profile access.
+
+Current limitation:
+
+- Sign-in state is in Flutter memory only. Refreshing the browser loses the signed-in state. Persistent server sessions are not implemented yet.
+
+## App Shells And Navigation
+
+Frontend:
+
+- `_DesktopShell` renders the desktop/web layout with left sidebar and top signed-in bar.
+- `_PhoneShell` renders the phone layout with bottom navigation.
+- `_SignedInBar` shows selected profile, user email, role, switch profile, and sign out actions.
+- `_Sidebar` renders desktop navigation and pins Settings at the bottom.
+- `_ScreenHost` maps selected navigation index to the active screen.
+- `MobileMoreScreen` holds phone-only secondary navigation.
+
+Navigation indexes:
+
+- `0` Dashboard
+- `1` Paycheck Setup
+- `2` Accounts
+- `3` Chunks
+- `4` Add Paycheck
+- `5` Transfers
+- `6` Transactions
+- `7` Settings
+- `8` Budget Overview
+- `9` Phone More menu
+
+## Dashboard
+
+Frontend:
+
+- `DashboardScreen` shows account totals, quick actions, accounts, chunks, and recent transfers.
+- `_DashboardActions` provides quick navigation to add paycheck, add transfer, accounts, chunks, and overview.
+- Recent Transfers rows call `showTransferDetails()` when tapped/clicked.
+
+Backend:
+
+- `dashboard_summary()` handles `/api/dashboard/summary`.
+- It returns totals, account summaries, chunks, recent money movements, recent paychecks, paycheck profiles, and first paycheck profile for backward compatibility.
+
+## Budget Overview
+
+Frontend:
+
+- `BudgetOverviewScreen` compares expected paycheck income against active chunk deductions.
+- It sums all paycheck profiles' `net_pay_amount`.
+- It subtracts all active chunks' `amount_per_paycheck`.
+- It shows leftover/unallocated expected per paycheck and warns when chunks exceed expected pay.
+
+Backend:
+
+- Uses data from `dashboard_summary()`.
+- No separate backend endpoint exists for this page.
+
+## Paycheck Setup
+
+Frontend:
+
+- `PaycheckSetupScreen` manages multiple paycheck profiles.
+- `_PaycheckSetupScreenState` lets the user select an existing paycheck profile or create a new one.
+- Each paycheck profile stores name, gross pay, net pay, net pay mode, pay frequency, and default deposit account.
+
+Backend:
+
+- `get_paycheck_profile()` handles legacy `GET /api/paycheck-profile`.
+- `list_paycheck_profiles()` handles `GET /api/paycheck-profiles`.
+- `upsert_paycheck_profile()` handles `POST/PUT /api/paycheck-profile`.
+- `PaycheckProfileIn` is the request model.
+
+Database:
+
+- `paycheck_profiles` supports multiple profiles per budget profile.
+- Migration removes the old `UNIQUE(profile_id)` constraint.
+- Existing single-profile data is preserved.
+
+## Add Paycheck
+
+Frontend:
+
+- `AddPaycheckScreen` lets the user choose a paycheck profile and deposit account.
+- It defaults the deposit account from the selected paycheck profile.
+- It shows the expected deposit amount before submit.
+- It can use expected net pay or a custom amount.
+
+Backend:
+
+- `add_paycheck()` handles `POST /api/paychecks/add`.
+- `list_paychecks()` handles `GET /api/paychecks`.
+- `AddPaycheckIn` is the request model.
+
+Behavior:
+
+- Adds net pay to the selected/default deposit account.
+- Allocates paycheck money into active chunks for that same account, in chunk order.
+- Remaining money becomes unallocated in that account.
+
+## Accounts
+
+Frontend:
+
+- `AccountsScreen` lists accounts and supports select mode, reorder, delete, and move chunks.
+- `_AccountCreateCard` creates a new account.
+- `showAccountDialog()` edits account details.
+- `confirmDeleteAccount()` confirms account deletion.
+
+Backend:
+
+- `list_accounts()` handles `GET /api/accounts`.
+- `create_account()` handles `POST /api/accounts`.
+- `reorder_accounts()` handles `PUT /api/accounts/reorder`.
+- `update_account()` handles `PUT /api/accounts/{account_id}`.
+- `delete_account()` handles `DELETE /api/accounts/{account_id}`.
+- `move_account_chunks()` handles `POST /api/accounts/{account_id}/move-chunks`.
+- `AccountIn`, `ReorderAccountsIn`, and `MoveAccountChunksIn` are request models.
+
+Important rules:
+
+- Accounts can be manual or bank-connected.
+- Zero-balance accounts can be deleted if chunks are moved first.
+- Account transaction/transfer logs are retained where designed for cash-flow history.
+
+## Chunks
+
+Frontend:
+
+- `ChunksScreen` lists chunks and opens chunk creation/edit dialogs.
+- `showChunkDialog()` creates or edits a chunk.
+
+Backend:
+
+- `list_chunks()` handles `GET /api/chunks`.
+- `create_chunk()` handles `POST /api/chunks`.
+- `update_chunk()` handles `PUT /api/chunks/{chunk_id}`.
+- `delete_chunk()` handles `DELETE /api/chunks/{chunk_id}`.
+- `ChunkIn` is the request model.
+
+Important rules:
+
+- Chunks belong to one account.
+- Chunk balances contribute to account allocated balance.
+- Account unallocated balance is account balance minus active chunk balances.
+
+## Transfers
+
+Frontend:
+
+- `TransfersScreen` creates and lists money movements.
+- `_TransfersScreenState` manages transfer type, source, destination, amount, note, source/destination balance hints, and client-side amount validation.
+- Transfer history rows call `showTransferDetails()`.
+- `showTransferDetails()` opens a details dialog from Dashboard or Transfers.
+- `movementEndpointName()` converts source/destination IDs into readable account/chunk labels.
+- `_BalanceHint` displays current source/destination balances.
+
+Backend:
+
+- `create_money_movement()` handles `POST /api/money-movements`.
+- `list_money_movements()` handles `GET /api/money-movements`.
+- `MoneyMovementIn` is the request model.
+
+Transfer types:
+
+- `allocation`: moves money between chunks and unallocated balances without changing account balances.
+- `manual_account_transfer`: moves unallocated money between manually managed accounts and changes those manual account balances.
+
+Important rules:
+
+- Unallocated-to-chunk must stay within the same account.
+- Chunk-to-unallocated returns money to the chunk's account.
+- Chunk-to-chunk across accounts requires the destination account to already have enough unallocated balance.
+- Transfer amount cannot exceed the source available amount.
+- Backend enforces balance rules even if frontend validation misses something.
+
+## Transactions
+
+Frontend:
+
+- `TransactionsScreen` records money entering or leaving an account from outside the budget.
+
+Backend:
+
+- `list_transactions()` handles `GET /api/transactions`.
+- `create_transaction()` handles `POST /api/transactions`.
+- `TransactionIn` is the request model.
+
+Difference from transfers:
+
+- Transactions represent outside-world activity such as purchases, deposits, fees, or income.
+- Transfers move existing tracked money between budget locations.
+
+## Settings
+
+Frontend:
+
+- `SettingsScreen` manages users and invitations for the selected budget profile.
+- `_SettingsCard` frames settings sections.
+
+Backend:
+
+- `list_users()` and `create_user()` support basic user creation/listing.
+- `list_budget_profile_members()` lists profile access.
+- `invite_budget_profile_member()` creates invitations.
+- `list_invitations()` lists invitations.
+- `accept_invitation()` accepts an invitation.
+
+## Shared Frontend Widgets And Helpers
+
+Shared widgets:
+
+- `_Page` provides consistent page title/action layout.
+- `_ResponsiveGrid` lays metric cards out responsively.
+- `_MetricCard` displays dashboard/overview metrics.
+- `_DataCard` frames lists and empty states.
+- `_ListRow` renders list rows and optional tap/click chevron behavior.
+- `_FormCard` frames standard forms and applies reading-order focus traversal.
+- `_SectionTitle` renders section headers.
+- `_Notice` renders yellow warning/help messages.
+- `_BalanceHint` renders gray balance context under transfer selectors.
+- `_DetailLine` renders label/value lines in dialogs.
+- `_MoneyField` is the shared money input and restricts input to `[0-9.]`.
+- `_DropdownField` is the shared dropdown form field.
+- `_SubmitButton` is the shared saving-aware submit button.
+- `_ErrorView` renders retryable load errors.
+
+Shared helpers:
+
+- `listOfMaps()` safely casts decoded JSON lists.
+- `parseMoney()` converts UI money strings to numeric values.
+- `movementLabel()` creates display labels for movement values.
+- `money()` formats numbers in Excel-like accounting style.
+- `formatDateTime()` formats ISO timestamps for display.
+- `showTransferDetails()` shows transfer detail dialogs.
+- `movementEndpointName()` maps transfer endpoint IDs to user-readable names.
+- `toast()` shows a snackbar.
+
+## Backend Helper Functions
+
+File: `backend/app/main.py`
+
+Database and security helpers:
+
+- `_database_path()` resolves SQLite file path from `DATABASE_URL`.
+- `db()` opens SQLite connections with foreign keys enabled.
+- `now()` returns current UTC timestamp.
+- `hash_password()` hashes passwords with PBKDF2-HMAC-SHA256.
+- `verify_password()` checks passwords.
+- `row_to_dict()` and `rows_to_dicts()` convert SQLite rows to dictionaries.
+- `init_db()` creates tables and runs migrations.
+- `column_exists()` checks table columns.
+- `table_sql()` reads SQLite table creation SQL.
+- `migrate_db()` applies schema migrations.
+- `startup()` runs database initialization on FastAPI startup.
+
+Lookup and permission helpers:
+
+- `get_account_or_404()` fetches an account or raises 404.
+- `get_chunk_or_404()` fetches a chunk or raises 404.
+- `get_profile_or_404()` fetches a budget profile or raises 404.
+- `require_profile_admin()` checks whether a user has admin access.
+- `account_summaries()` returns accounts with allocated/unallocated balances.
+- `account_summary()` returns one summarized account.
+
+Request models:
+
+- `AccountIn`
+- `UserIn`
+- `LoginIn`
+- `RegisterIn`
+- `BudgetProfileIn`
+- `ReorderProfilesIn`
+- `MoveAccountChunksIn`
+- `ReorderAccountsIn`
+- `InvitationIn`
+- `AcceptInvitationIn`
+- `PaycheckProfileIn`
+- `ChunkIn`
+- `AddPaycheckIn`
+- `MoneyMovementIn`
+- `TransactionIn`
+
+## Backend Route Groups
+
+Health:
+
+- `health()` handles `GET /api/health`.
+
+Users/auth:
+
+- `list_users()`
+- `create_user()`
+- `register()`
+- `login()`
+
+Budget profiles/access:
+
+- `list_budget_profiles()`
+- `create_budget_profile()`
+- `reorder_budget_profiles()`
+- `delete_budget_profile()`
+- `list_budget_profile_members()`
+- `invite_budget_profile_member()`
+- `list_invitations()`
+- `accept_invitation()`
+
+Dashboard:
+
+- `dashboard_summary()`
+
+Accounts:
+
+- `list_accounts()`
+- `create_account()`
+- `reorder_accounts()`
+- `update_account()`
+- `delete_account()`
+- `move_account_chunks()`
+
+Paycheck profiles and paychecks:
+
+- `get_paycheck_profile()`
+- `list_paycheck_profiles()`
+- `upsert_paycheck_profile()`
+- `add_paycheck()`
+- `list_paychecks()`
+
+Chunks:
+
+- `list_chunks()`
+- `create_chunk()`
+- `update_chunk()`
+- `delete_chunk()`
+
+Money movements/transfers:
+
+- `create_money_movement()`
+- `list_money_movements()`
+
+Transactions:
+
+- `list_transactions()`
+- `create_transaction()`
+
+## Common Development Checks
+
+Run these before pushing:
+
+```bash
+python3 -m py_compile backend/app/main.py
+flutter analyze
+flutter test
+flutter build web --release
+```
+
+For database migration checks, use the project virtualenv because system Python may not have FastAPI installed:
+
+```bash
+DATABASE_URL=sqlite:////private/tmp/chunkycat-smoke.db .venv/bin/python -c "from backend.app.main import init_db; init_db(); print('ok')"
+```

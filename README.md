@@ -61,7 +61,7 @@ GitHub Actions generates this metadata during the container build from:
 - GitHub Actions run number
 - UTC build timestamp
 
-Nginx serves `/`, `/index.html`, `/version.json`, `/flutter_bootstrap.js`, and `/flutter_service_worker.js` with no-cache headers. Versioned Flutter assets may still be cached normally, so users should not need to clear their browser cache after an update.
+Nginx serves `/`, `/index.html`, `/version.json`, `/flutter_bootstrap.js`, `/flutter_service_worker.js`, `/main.dart.js`, `/flutter.js`, `/manifest.json`, and `/.last_build_id` with no-cache headers. Other static Flutter assets may still be cached normally, so users should not need to clear their browser cache after an update.
 
 ## unRAID
 
