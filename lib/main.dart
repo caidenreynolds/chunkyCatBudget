@@ -1409,9 +1409,10 @@ class DashboardScreen extends StatelessWidget {
               return _ListRow(
                 title: '${m['source_type']} to ${m['destination_type']}',
                 subtitle: m['note'].toString().isEmpty
-                    ? m['created_at'].toString()
+                    ? formatDateTime(m['created_at'])
                     : m['note'].toString(),
                 trailing: money(m['amount']),
+                onTap: () => showTransferDetails(context, m, accounts, chunks),
               );
             }).toList(),
           ),
@@ -2276,6 +2277,32 @@ class _TransfersScreenState extends State<TransfersScreen> {
       ),
     ];
 
+    final formCard = FocusTraversalGroup(
+      policy: ReadingOrderTraversalPolicy(),
+      child: Card(
+        child: Padding(
+          padding: EdgeInsets.all(isPhone ? 14 : 16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (!isPhone) ...[
+                const _Notice(
+                  'Use Add Transfer to move existing budget money between unallocated balances and chunks. For unallocated to chunk, choose the account as the source and a chunk in that same account as the destination.',
+                ),
+                const SizedBox(height: 12),
+              ],
+              ...formFields.map(
+                (child) => Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: child,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
     return _Page(
       title: 'Transfers',
       actions: [
@@ -2295,38 +2322,20 @@ class _TransfersScreenState extends State<TransfersScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const _Notice(
-              'Use Add Transfer to move existing budget money between unallocated balances and chunks. For unallocated to chunk, choose the account as the source and a chunk in that same account as the destination.',
-            ),
-            const SizedBox(height: 14),
-            LayoutBuilder(
-              builder: (context, constraints) {
-                return Align(
-                  alignment: Alignment.centerLeft,
-                  child: SizedBox(
-                    width: isPhone ? double.infinity : constraints.maxWidth,
-                    child: FocusTraversalGroup(
-                      policy: ReadingOrderTraversalPolicy(),
-                      child: Card(
-                        child: Padding(
-                          padding: EdgeInsets.all(isPhone ? 14 : 16),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.stretch,
-                            children: formFields
-                                .map(
-                                  (child) => Padding(
-                                    padding: const EdgeInsets.only(bottom: 12),
-                                    child: child,
-                                  ),
-                                )
-                                .toList(),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                );
-              },
+            if (isPhone) ...[
+              const _Notice(
+                'Use Add Transfer to move existing budget money between unallocated balances and chunks. For unallocated to chunk, choose the account as the source and a chunk in that same account as the destination.',
+              ),
+              const SizedBox(height: 14),
+            ],
+            Align(
+              alignment: Alignment.centerLeft,
+              child: ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxWidth: isPhone ? double.infinity : 620,
+                ),
+                child: formCard,
+              ),
             ),
             const SizedBox(height: 20),
             _SectionTitle('Movement Log'),
@@ -2342,7 +2351,7 @@ class _TransfersScreenState extends State<TransfersScreen> {
                       : m['note'].toString(),
                   trailing: money(m['amount']),
                   onTap: () =>
-                      _showTransferDetails(context, m, accounts, chunks),
+                      showTransferDetails(context, m, accounts, chunks),
                 );
               }).toList(),
             ),
@@ -2447,88 +2456,6 @@ class _TransfersScreenState extends State<TransfersScreen> {
 
   String _accountBalanceSummary(Map<String, dynamic> account) {
     return 'Allocated ${money(account['allocated_balance'])}  |  Unallocated ${money(account['unallocated_balance'])}  |  Total ${money(account['balance'])}';
-  }
-
-  void _showTransferDetails(
-    BuildContext context,
-    Map<String, dynamic> movement,
-    List<Map<String, dynamic>> accounts,
-    List<Map<String, dynamic>> chunks,
-  ) {
-    showDialog<void>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Transfer Details'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _DetailLine(
-              label: 'From',
-              value: _movementEndpointName(
-                movement['source_type'],
-                movement['source_id'],
-                accounts,
-                chunks,
-              ),
-            ),
-            _DetailLine(
-              label: 'To',
-              value: _movementEndpointName(
-                movement['destination_type'],
-                movement['destination_id'],
-                accounts,
-                chunks,
-              ),
-            ),
-            _DetailLine(label: 'Amount', value: money(movement['amount'])),
-            _DetailLine(
-              label: 'Note',
-              value: movement['note'].toString().isEmpty
-                  ? 'None'
-                  : movement['note'].toString(),
-            ),
-            _DetailLine(
-              label: 'Date',
-              value: formatDateTime(movement['created_at']),
-            ),
-          ],
-        ),
-        actions: [
-          FilledButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Close'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  String _movementEndpointName(
-    dynamic type,
-    dynamic id,
-    List<Map<String, dynamic>> accounts,
-    List<Map<String, dynamic>> chunks,
-  ) {
-    final value = type?.toString() ?? '';
-    if (value == 'outside_account') return 'Outside account';
-    if (value == 'chunk') {
-      final chunk = chunks.cast<Map<String, dynamic>?>().firstWhere(
-        (item) => item?['id'] == id,
-        orElse: () => null,
-      );
-      return chunk == null ? 'Chunk #$id' : '${chunk['name']} chunk';
-    }
-    if (value == 'unallocated' || value == 'account') {
-      final account = accounts.cast<Map<String, dynamic>?>().firstWhere(
-        (item) => item?['id'] == id,
-        orElse: () => null,
-      );
-      return account == null
-          ? 'Account #$id unallocated'
-          : '${account['name']} unallocated';
-    }
-    return movementLabel(value);
   }
 }
 
@@ -3580,6 +3507,88 @@ String formatDateTime(dynamic value) {
   final parsed = DateTime.tryParse(value?.toString() ?? '');
   if (parsed == null) return value?.toString() ?? '';
   return DateFormat('yyyy-MM-dd HH:mm').format(parsed.toLocal());
+}
+
+void showTransferDetails(
+  BuildContext context,
+  Map<String, dynamic> movement,
+  List<Map<String, dynamic>> accounts,
+  List<Map<String, dynamic>> chunks,
+) {
+  showDialog<void>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: const Text('Transfer Details'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _DetailLine(
+            label: 'From',
+            value: movementEndpointName(
+              movement['source_type'],
+              movement['source_id'],
+              accounts,
+              chunks,
+            ),
+          ),
+          _DetailLine(
+            label: 'To',
+            value: movementEndpointName(
+              movement['destination_type'],
+              movement['destination_id'],
+              accounts,
+              chunks,
+            ),
+          ),
+          _DetailLine(label: 'Amount', value: money(movement['amount'])),
+          _DetailLine(
+            label: 'Note',
+            value: movement['note'].toString().isEmpty
+                ? 'None'
+                : movement['note'].toString(),
+          ),
+          _DetailLine(
+            label: 'Date',
+            value: formatDateTime(movement['created_at']),
+          ),
+        ],
+      ),
+      actions: [
+        FilledButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Close'),
+        ),
+      ],
+    ),
+  );
+}
+
+String movementEndpointName(
+  dynamic type,
+  dynamic id,
+  List<Map<String, dynamic>> accounts,
+  List<Map<String, dynamic>> chunks,
+) {
+  final value = type?.toString() ?? '';
+  if (value == 'outside_account') return 'Outside account';
+  if (value == 'chunk') {
+    final chunk = chunks.cast<Map<String, dynamic>?>().firstWhere(
+      (item) => item?['id'] == id,
+      orElse: () => null,
+    );
+    return chunk == null ? 'Chunk #$id' : '${chunk['name']} chunk';
+  }
+  if (value == 'unallocated' || value == 'account') {
+    final account = accounts.cast<Map<String, dynamic>?>().firstWhere(
+      (item) => item?['id'] == id,
+      orElse: () => null,
+    );
+    return account == null
+        ? 'Account #$id unallocated'
+        : '${account['name']} unallocated';
+  }
+  return movementLabel(value);
 }
 
 void toast(BuildContext context, String message) {
