@@ -74,6 +74,7 @@ class BudgetApi {
         path == '/api/accounts' ||
         path.startsWith('/api/accounts/') ||
         path == '/api/paycheck-profile' ||
+        path == '/api/paycheck-profiles' ||
         path == '/api/chunks' ||
         path.startsWith('/api/chunks/') ||
         path.startsWith('/api/paychecks') ||
@@ -1172,6 +1173,13 @@ class _Sidebar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final settingsIndex = screens.indexWhere(
+      (screen) => screen.$1 == 'Settings',
+    );
+    final primaryIndexes = [
+      for (var index = 0; index < screens.length; index++)
+        if (index != settingsIndex) index,
+    ];
     return Container(
       width: 236,
       color: const Color(0xFFFFFFFF),
@@ -1189,28 +1197,36 @@ class _Sidebar extends StatelessWidget {
             Expanded(
               child: ListView.builder(
                 padding: const EdgeInsets.symmetric(horizontal: 12),
-                itemCount: screens.length,
-                itemBuilder: (context, index) {
-                  final item = screens[index];
-                  return Padding(
-                    padding: const EdgeInsets.only(bottom: 4),
-                    child:
-                        NavigationDrawerDestination(
-                          icon: Icon(item.$2),
-                          label: Text(item.$1),
-                          selectedIcon: Icon(item.$2),
-                        ).buildListTile(
-                          context,
-                          selected: selected == index,
-                          onTap: () => onSelect(index),
-                        ),
-                  );
-                },
+                itemCount: primaryIndexes.length,
+                itemBuilder: (context, listIndex) =>
+                    _sidebarTile(context, primaryIndexes[listIndex]),
               ),
             ),
+            if (settingsIndex >= 0)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                child: _sidebarTile(context, settingsIndex),
+              ),
           ],
         ),
       ),
+    );
+  }
+
+  Widget _sidebarTile(BuildContext context, int index) {
+    final item = screens[index];
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child:
+          NavigationDrawerDestination(
+            icon: Icon(item.$2),
+            label: Text(item.$1),
+            selectedIcon: Icon(item.$2),
+          ).buildListTile(
+            context,
+            selected: selected == index,
+            onTap: () => onSelect(index),
+          ),
     );
   }
 }
@@ -1532,21 +1548,22 @@ class BudgetOverviewScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isPhone = MediaQuery.sizeOf(context).width < 600;
-    final profile = data['paycheck_profile'] is Map
-        ? Map<String, dynamic>.from(data['paycheck_profile'] as Map)
-        : <String, dynamic>{};
+    final profiles = listOfMaps(data['paycheck_profiles']);
     final chunks = listOfMaps(data['chunks']);
     final activeChunks = chunks
         .where((chunk) => chunk['is_active'] != false)
         .toList();
-    final expectedPay = parseMoney('${profile['net_pay_amount'] ?? 0}');
+    final expectedPay = profiles.fold<double>(
+      0,
+      (total, profile) =>
+          total + parseMoney('${profile['net_pay_amount'] ?? 0}'),
+    );
     final chunkTotal = activeChunks.fold<double>(
       0,
       (total, chunk) =>
           total + parseMoney('${chunk['amount_per_paycheck'] ?? 0}'),
     );
     final leftover = expectedPay - chunkTotal;
-    final frequency = profile['pay_frequency']?.toString();
 
     return _Page(
       title: 'Budget Overview',
@@ -1593,9 +1610,8 @@ class BudgetOverviewScreen extends StatelessWidget {
             children: [
               _ListRow(
                 title: 'Expected net pay',
-                subtitle: frequency == null
-                    ? 'Paycheck Setup'
-                    : movementLabel(frequency),
+                subtitle:
+                    '${profiles.length} paycheck profile${profiles.length == 1 ? '' : 's'}',
                 trailing: money(expectedPay),
               ),
               _ListRow(
@@ -1610,6 +1626,20 @@ class BudgetOverviewScreen extends StatelessWidget {
                 trailing: money(leftover),
               ),
             ],
+          ),
+          const SizedBox(height: 20),
+          _SectionTitle('Paycheck Profiles'),
+          _DataCard(
+            emptyText: 'No paycheck profiles yet',
+            children: profiles.map((profile) {
+              return _ListRow(
+                title: profile['name']?.toString() ?? 'Paycheck',
+                subtitle: movementLabel(
+                  profile['pay_frequency']?.toString() ?? 'custom',
+                ),
+                trailing: money(profile['net_pay_amount']),
+              );
+            }).toList(),
           ),
           const SizedBox(height: 20),
           _SectionTitle('Chunk Deductions'),
@@ -1647,30 +1677,85 @@ class PaycheckSetupScreen extends StatefulWidget {
 }
 
 class _PaycheckSetupScreenState extends State<PaycheckSetupScreen> {
+  final profileName = TextEditingController(text: 'Paycheck');
   final gross = TextEditingController();
   final net = TextEditingController();
   var mode = 'expected';
   var frequency = 'biweekly';
+  int? selectedPaycheckProfileId;
+  int? defaultAccountId;
   var saving = false;
 
   @override
   void initState() {
     super.initState();
-    final profile = widget.data['paycheck_profile'];
-    if (profile is Map) {
-      gross.text = '${profile['gross_pay_amount'] ?? ''}';
-      net.text = '${profile['net_pay_amount'] ?? ''}';
-      mode = profile['net_pay_mode']?.toString() ?? mode;
-      frequency = profile['pay_frequency']?.toString() ?? frequency;
-    }
+    final profiles = listOfMaps(widget.data['paycheck_profiles']);
+    if (profiles.isNotEmpty) _loadProfile(profiles.first);
+  }
+
+  @override
+  void dispose() {
+    profileName.dispose();
+    gross.dispose();
+    net.dispose();
+    super.dispose();
+  }
+
+  void _loadProfile(Map<String, dynamic> profile) {
+    selectedPaycheckProfileId = profile['id'] as int?;
+    profileName.text = profile['name']?.toString() ?? 'Paycheck';
+    gross.text = '${profile['gross_pay_amount'] ?? ''}';
+    net.text = '${profile['net_pay_amount'] ?? ''}';
+    mode = profile['net_pay_mode']?.toString() ?? mode;
+    frequency = profile['pay_frequency']?.toString() ?? frequency;
+    defaultAccountId = profile['default_account_id'] as int?;
+  }
+
+  void _newProfile() {
+    setState(() {
+      selectedPaycheckProfileId = null;
+      profileName.text = 'Paycheck';
+      gross.clear();
+      net.clear();
+      mode = 'expected';
+      frequency = 'biweekly';
+      final accounts = listOfMaps(widget.data['accounts']);
+      defaultAccountId = accounts.isNotEmpty
+          ? accounts.first['id'] as int
+          : null;
+    });
   }
 
   @override
   Widget build(BuildContext context) {
+    final profiles = listOfMaps(widget.data['paycheck_profiles']);
+    final accounts = listOfMaps(widget.data['accounts']);
+    defaultAccountId ??= accounts.isNotEmpty
+        ? accounts.first['id'] as int
+        : null;
     return _Page(
       title: 'Paycheck Setup',
       child: _FormCard(
         children: [
+          if (profiles.isNotEmpty)
+            _DropdownField<int>(
+              label: 'Paycheck profile',
+              value: selectedPaycheckProfileId,
+              values: profiles.map((profile) => profile['id'] as int).toList(),
+              labelFor: (id) => profiles
+                  .firstWhere((profile) => profile['id'] == id)['name']
+                  .toString(),
+              onChanged: (id) {
+                final profile = profiles.firstWhere(
+                  (profile) => profile['id'] == id,
+                );
+                setState(() => _loadProfile(profile));
+              },
+            ),
+          TextField(
+            controller: profileName,
+            decoration: const InputDecoration(labelText: 'Profile name'),
+          ),
           _MoneyField(label: 'Gross pay amount', controller: gross),
           _MoneyField(label: 'Net pay amount', controller: net),
           _DropdownField(
@@ -1691,9 +1776,25 @@ class _PaycheckSetupScreenState extends State<PaycheckSetupScreen> {
             ],
             onChanged: (v) => setState(() => frequency = v ?? frequency),
           ),
+          _DropdownField<int>(
+            label: 'Default deposit account',
+            value: defaultAccountId,
+            values: accounts.map((account) => account['id'] as int).toList(),
+            labelFor: (id) => accounts
+                .firstWhere((account) => account['id'] == id)['name']
+                .toString(),
+            onChanged: (v) => setState(() => defaultAccountId = v),
+          ),
+          OutlinedButton.icon(
+            onPressed: widget.canEdit ? _newProfile : null,
+            icon: const Icon(Icons.add),
+            label: const Text('New Paycheck Profile'),
+          ),
           _SubmitButton(
             saving: saving,
-            label: 'Save Profile',
+            label: selectedPaycheckProfileId == null
+                ? 'Create Profile'
+                : 'Save Profile',
             onPressed: widget.canEdit ? _save : null,
           ),
         ],
@@ -1704,12 +1805,16 @@ class _PaycheckSetupScreenState extends State<PaycheckSetupScreen> {
   Future<void> _save() async {
     setState(() => saving = true);
     try {
-      await widget.api.post('/api/paycheck-profile', {
+      final saved = await widget.api.post('/api/paycheck-profile', {
+        'id': selectedPaycheckProfileId,
+        'name': profileName.text,
         'gross_pay_amount': parseMoney(gross.text),
         'net_pay_amount': parseMoney(net.text),
         'net_pay_mode': mode,
         'pay_frequency': frequency,
+        'default_account_id': defaultAccountId,
       });
+      selectedPaycheckProfileId = saved['id'] as int?;
       widget.refresh();
       if (!mounted) return;
       toast(context, 'Paycheck profile saved');
@@ -2159,6 +2264,7 @@ class AddPaycheckScreen extends StatefulWidget {
 
 class _AddPaycheckScreenState extends State<AddPaycheckScreen> {
   var mode = 'expected';
+  int? paycheckProfileId;
   int? accountId;
   final custom = TextEditingController();
   var saving = false;
@@ -2166,18 +2272,54 @@ class _AddPaycheckScreenState extends State<AddPaycheckScreen> {
   @override
   Widget build(BuildContext context) {
     final accounts = listOfMaps(widget.data['accounts']);
-    accountId ??= accounts.isNotEmpty ? accounts.first['id'] as int : null;
-    final profile = widget.data['paycheck_profile'];
+    final profiles = listOfMaps(widget.data['paycheck_profiles']);
+    paycheckProfileId ??= profiles.isNotEmpty
+        ? profiles.first['id'] as int
+        : null;
+    final profile = profiles.cast<Map<String, dynamic>?>().firstWhere(
+      (item) => item?['id'] == paycheckProfileId,
+      orElse: () => null,
+    );
+    accountId ??=
+        profile?['default_account_id'] as int? ??
+        (accounts.isNotEmpty ? accounts.first['id'] as int : null);
     return _Page(
       title: 'Add Paycheck',
       child: _FormCard(
         children: [
-          if (profile == null)
+          if (profiles.isEmpty)
             const _Notice(
               'Create a paycheck profile before adding a paycheck.',
             ),
           if (accounts.isEmpty)
             const _Notice('Create an account before adding a paycheck.'),
+          _DropdownField<int>(
+            label: 'Paycheck profile',
+            value: paycheckProfileId,
+            values: profiles.map((profile) => profile['id'] as int).toList(),
+            labelFor: (id) => profiles
+                .firstWhere((profile) => profile['id'] == id)['name']
+                .toString(),
+            onChanged: (id) {
+              final selected = profiles
+                  .cast<Map<String, dynamic>?>()
+                  .firstWhere(
+                    (profile) => profile?['id'] == id,
+                    orElse: () => null,
+                  );
+              setState(() {
+                paycheckProfileId = id;
+                accountId =
+                    selected?['default_account_id'] as int? ??
+                    (accounts.isNotEmpty ? accounts.first['id'] as int : null);
+              });
+            },
+          ),
+          if (profile != null)
+            _BalanceHint(
+              text:
+                  'Expected deposit from ${profile['name']}: ${money(profile['net_pay_amount'])}',
+            ),
           _DropdownField<int>(
             label: 'Deposit account',
             value: accountId,
@@ -2212,6 +2354,7 @@ class _AddPaycheckScreenState extends State<AddPaycheckScreen> {
     setState(() => saving = true);
     try {
       final result = await widget.api.post('/api/paychecks/add', {
+        'paycheck_profile_id': paycheckProfileId,
         'amount_mode': mode,
         'custom_amount': mode == 'custom' ? parseMoney(custom.text) : null,
         'account_id': accountId,

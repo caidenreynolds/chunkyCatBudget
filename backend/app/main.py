@@ -116,10 +116,13 @@ class AcceptInvitationIn(BaseModel):
 
 
 class PaycheckProfileIn(BaseModel):
+    id: int | None = None
+    name: str = "Paycheck"
     gross_pay_amount: float = Field(ge=0)
     net_pay_amount: float = Field(ge=0)
     net_pay_mode: Literal["manual", "expected", "estimated"] = "expected"
     pay_frequency: Literal["weekly", "biweekly", "semimonthly", "monthly", "custom"]
+    default_account_id: int | None = None
 
 
 class ChunkIn(BaseModel):
@@ -131,6 +134,7 @@ class ChunkIn(BaseModel):
 
 
 class AddPaycheckIn(BaseModel):
+    paycheck_profile_id: int | None = None
     amount_mode: Literal["expected", "custom"] = "expected"
     custom_amount: float | None = Field(default=None, ge=0)
     account_id: int | None = None
@@ -224,12 +228,13 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS paycheck_profiles (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 profile_id INTEGER NOT NULL DEFAULT 1 REFERENCES budget_profiles(id),
+                name TEXT NOT NULL DEFAULT 'Paycheck',
                 gross_pay_amount REAL NOT NULL,
                 net_pay_amount REAL NOT NULL,
                 net_pay_mode TEXT NOT NULL,
                 pay_frequency TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                UNIQUE(profile_id)
+                default_account_id INTEGER REFERENCES accounts(id),
+                updated_at TEXT NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS budget_chunks (
@@ -247,6 +252,7 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS paychecks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 profile_id INTEGER NOT NULL DEFAULT 1 REFERENCES budget_profiles(id),
+                paycheck_profile_id INTEGER REFERENCES paycheck_profiles(id),
                 account_id INTEGER NOT NULL REFERENCES accounts(id),
                 gross_amount REAL NOT NULL,
                 net_amount REAL NOT NULL,
@@ -302,6 +308,11 @@ def column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
     return any(row["name"] == column for row in conn.execute(f"PRAGMA table_info({table})").fetchall())
 
 
+def table_sql(conn: sqlite3.Connection, table: str) -> str:
+    row = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)).fetchone()
+    return row["sql"] if row and row["sql"] else ""
+
+
 def migrate_db(conn: sqlite3.Connection) -> None:
     stamp = now()
     if not column_exists(conn, "users", "display_name"):
@@ -320,6 +331,14 @@ def migrate_db(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE user_profile_access ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0")
     if not column_exists(conn, "money_movements", "movement_type"):
         conn.execute("ALTER TABLE money_movements ADD COLUMN movement_type TEXT NOT NULL DEFAULT 'allocation'")
+    if not column_exists(conn, "paycheck_profiles", "profile_id"):
+        conn.execute("ALTER TABLE paycheck_profiles ADD COLUMN profile_id INTEGER NOT NULL DEFAULT 1 REFERENCES budget_profiles(id)")
+    if not column_exists(conn, "paycheck_profiles", "name"):
+        conn.execute("ALTER TABLE paycheck_profiles ADD COLUMN name TEXT NOT NULL DEFAULT 'Paycheck'")
+    if not column_exists(conn, "paycheck_profiles", "default_account_id"):
+        conn.execute("ALTER TABLE paycheck_profiles ADD COLUMN default_account_id INTEGER REFERENCES accounts(id)")
+    if not column_exists(conn, "paychecks", "paycheck_profile_id"):
+        conn.execute("ALTER TABLE paychecks ADD COLUMN paycheck_profile_id INTEGER REFERENCES paycheck_profiles(id)")
 
     existing_user = conn.execute("SELECT * FROM users ORDER BY id LIMIT 1").fetchone()
     if existing_user is None:
@@ -359,6 +378,28 @@ def migrate_db(conn: sqlite3.Connection) -> None:
     if not column_exists(conn, "paycheck_profiles", "profile_id"):
         conn.execute("ALTER TABLE paycheck_profiles ADD COLUMN profile_id INTEGER NOT NULL DEFAULT 1 REFERENCES budget_profiles(id)")
     conn.execute("UPDATE paycheck_profiles SET profile_id = ? WHERE profile_id IS NULL OR profile_id = 1", (profile_id,))
+    if "UNIQUE(profile_id)" in table_sql(conn, "paycheck_profiles"):
+        conn.executescript(
+            """
+            ALTER TABLE paycheck_profiles RENAME TO paycheck_profiles_old;
+            CREATE TABLE paycheck_profiles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                profile_id INTEGER NOT NULL DEFAULT 1 REFERENCES budget_profiles(id),
+                name TEXT NOT NULL DEFAULT 'Paycheck',
+                gross_pay_amount REAL NOT NULL,
+                net_pay_amount REAL NOT NULL,
+                net_pay_mode TEXT NOT NULL,
+                pay_frequency TEXT NOT NULL,
+                default_account_id INTEGER REFERENCES accounts(id),
+                updated_at TEXT NOT NULL
+            );
+            INSERT INTO paycheck_profiles
+                (id, profile_id, name, gross_pay_amount, net_pay_amount, net_pay_mode, pay_frequency, default_account_id, updated_at)
+            SELECT id, profile_id, name, gross_pay_amount, net_pay_amount, net_pay_mode, pay_frequency, default_account_id, updated_at
+            FROM paycheck_profiles_old;
+            DROP TABLE paycheck_profiles_old;
+            """
+        )
 
 
 @app.on_event("startup")
@@ -698,6 +739,9 @@ def dashboard_summary(profile_id: int = 1) -> dict[str, Any]:
         paychecks = rows_to_dicts(
             conn.execute("SELECT * FROM paychecks WHERE profile_id = ? ORDER BY created_at DESC LIMIT 5", (profile_id,)).fetchall()
         )
+        paycheck_profiles = rows_to_dicts(
+            conn.execute("SELECT * FROM paycheck_profiles WHERE profile_id = ? ORDER BY id", (profile_id,)).fetchall()
+        )
         return {
             "totals": {
                 "account_balance": sum(a["balance"] for a in accounts),
@@ -708,9 +752,8 @@ def dashboard_summary(profile_id: int = 1) -> dict[str, Any]:
             "chunks": chunks,
             "recent_money_movements": movements,
             "recent_paychecks": paychecks,
-            "paycheck_profile": row_to_dict(
-                conn.execute("SELECT * FROM paycheck_profiles WHERE profile_id = ?", (profile_id,)).fetchone()
-            ),
+            "paycheck_profiles": paycheck_profiles,
+            "paycheck_profile": paycheck_profiles[0] if paycheck_profiles else None,
         }
 
 
@@ -806,46 +849,68 @@ def get_paycheck_profile(profile_id: int = 1) -> dict[str, Any] | None:
         return row_to_dict(conn.execute("SELECT * FROM paycheck_profiles WHERE profile_id = ?", (profile_id,)).fetchone())
 
 
+@app.get("/api/paycheck-profiles")
+def list_paycheck_profiles(profile_id: int = 1) -> list[dict[str, Any]]:
+    with db() as conn:
+        get_profile_or_404(conn, profile_id)
+        return rows_to_dicts(conn.execute("SELECT * FROM paycheck_profiles WHERE profile_id = ? ORDER BY id", (profile_id,)).fetchall())
+
+
 @app.post("/api/paycheck-profile")
 @app.put("/api/paycheck-profile")
 def upsert_paycheck_profile(payload: PaycheckProfileIn, profile_id: int = 1) -> dict[str, Any]:
     with db() as conn:
         get_profile_or_404(conn, profile_id)
-        existing = conn.execute("SELECT * FROM paycheck_profiles WHERE profile_id = ?", (profile_id,)).fetchone()
+        if payload.default_account_id is not None:
+            account = get_account_or_404(conn, payload.default_account_id)
+            if account["profile_id"] != profile_id:
+                raise HTTPException(status_code=404, detail="Default account not found")
+        existing = None
+        if payload.id is not None:
+            existing = conn.execute("SELECT * FROM paycheck_profiles WHERE id = ? AND profile_id = ?", (payload.id, profile_id)).fetchone()
+            if not existing:
+                raise HTTPException(status_code=404, detail="Paycheck profile not found")
         if existing:
             conn.execute(
                 """
                 UPDATE paycheck_profiles
-                SET gross_pay_amount = ?, net_pay_amount = ?, net_pay_mode = ?,
-                    pay_frequency = ?, updated_at = ?
-                WHERE profile_id = ?
+                SET name = ?, gross_pay_amount = ?, net_pay_amount = ?, net_pay_mode = ?,
+                    pay_frequency = ?, default_account_id = ?, updated_at = ?
+                WHERE id = ? AND profile_id = ?
                 """,
                 (
+                    payload.name.strip() or "Paycheck",
                     payload.gross_pay_amount,
                     payload.net_pay_amount,
                     payload.net_pay_mode,
                     payload.pay_frequency,
+                    payload.default_account_id,
                     now(),
+                    payload.id,
                     profile_id,
                 ),
             )
+            profile_id_to_return = payload.id
         else:
-            conn.execute(
+            cursor = conn.execute(
                 """
                 INSERT INTO paycheck_profiles
-                    (profile_id, gross_pay_amount, net_pay_amount, net_pay_mode, pay_frequency, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                    (profile_id, name, gross_pay_amount, net_pay_amount, net_pay_mode, pay_frequency, default_account_id, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     profile_id,
+                    payload.name.strip() or "Paycheck",
                     payload.gross_pay_amount,
                     payload.net_pay_amount,
                     payload.net_pay_mode,
                     payload.pay_frequency,
+                    payload.default_account_id,
                     now(),
                 ),
             )
-        return row_to_dict(conn.execute("SELECT * FROM paycheck_profiles WHERE profile_id = ?", (profile_id,)).fetchone())
+            profile_id_to_return = cursor.lastrowid
+        return row_to_dict(conn.execute("SELECT * FROM paycheck_profiles WHERE id = ?", (profile_id_to_return,)).fetchone())
 
 
 @app.get("/api/chunks")
@@ -960,10 +1025,15 @@ def delete_chunk(chunk_id: int, profile_id: int = 1) -> dict[str, bool]:
 def add_paycheck(payload: AddPaycheckIn, profile_id: int = 1) -> dict[str, Any]:
     with db() as conn:
         get_profile_or_404(conn, profile_id)
-        profile = conn.execute("SELECT * FROM paycheck_profiles WHERE profile_id = ?", (profile_id,)).fetchone()
+        if payload.paycheck_profile_id is not None:
+            profile = conn.execute(
+                "SELECT * FROM paycheck_profiles WHERE id = ? AND profile_id = ?", (payload.paycheck_profile_id, profile_id)
+            ).fetchone()
+        else:
+            profile = conn.execute("SELECT * FROM paycheck_profiles WHERE profile_id = ? ORDER BY id LIMIT 1", (profile_id,)).fetchone()
         if not profile:
             raise HTTPException(status_code=400, detail="Create a paycheck profile first")
-        account_id = payload.account_id
+        account_id = payload.account_id or profile["default_account_id"]
         if account_id is None:
             account = conn.execute(
                 "SELECT * FROM accounts WHERE profile_id = ? AND is_active = 1 ORDER BY id LIMIT 1", (profile_id,)
@@ -981,10 +1051,10 @@ def add_paycheck(payload: AddPaycheckIn, profile_id: int = 1) -> dict[str, Any]:
         stamp = now()
         cursor = conn.execute(
             """
-            INSERT INTO paychecks (profile_id, account_id, gross_amount, net_amount, amount_mode, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO paychecks (profile_id, paycheck_profile_id, account_id, gross_amount, net_amount, amount_mode, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (profile_id, account_id, profile["gross_pay_amount"], net_amount, payload.amount_mode, stamp),
+            (profile_id, profile["id"], account_id, profile["gross_pay_amount"], net_amount, payload.amount_mode, stamp),
         )
         paycheck_id = cursor.lastrowid
         conn.execute("UPDATE accounts SET balance = balance + ?, updated_at = ? WHERE id = ?", (net_amount, stamp, account_id))
