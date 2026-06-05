@@ -2158,119 +2158,162 @@ class _TransfersScreenState extends State<TransfersScreen> {
         ? selectableAccounts.first['id'] as int
         : null;
 
+    final isPhone = MediaQuery.sizeOf(context).width < 600;
+    final requiresDestination = destinationType != 'outside_account';
+    final canAddTransfer =
+        widget.canEdit &&
+        sourceId != null &&
+        (!requiresDestination || destinationId != null) &&
+        !saving;
+
+    final formFields = [
+      _DropdownField(
+        label: 'Transfer type',
+        value: movementType,
+        values: const ['allocation', 'manual_account_transfer'],
+        labelFor: (value) => value == 'allocation'
+            ? 'Allocation transfer'
+            : 'Manual account transfer',
+        onChanged: (v) => setState(() {
+          movementType = v ?? movementType;
+          sourceType = 'unallocated';
+          destinationType = movementType == 'manual_account_transfer'
+              ? 'unallocated'
+              : 'chunk';
+          sourceId = null;
+          destinationId = null;
+        }),
+      ),
+      if (movementType == 'manual_account_transfer') ...[
+        _EntityDropdown(
+          label: 'From manual account',
+          type: 'unallocated',
+          id: sourceId,
+          accounts: manualAccounts,
+          chunks: chunks,
+          onChanged: (v) => setState(() => sourceId = v),
+        ),
+        _EntityDropdown(
+          label: 'To manual account',
+          type: 'unallocated',
+          id: destinationId,
+          accounts: manualAccounts,
+          chunks: chunks,
+          onChanged: (v) => setState(() => destinationId = v),
+        ),
+      ] else ...[
+        _DropdownField(
+          label: 'From',
+          value: sourceType,
+          values: const ['chunk', 'unallocated'],
+          onChanged: (v) => setState(() {
+            sourceType = v ?? sourceType;
+            sourceId = null;
+          }),
+        ),
+        _EntityDropdown(
+          label: 'Source',
+          type: sourceType,
+          id: sourceId,
+          accounts: accounts,
+          chunks: chunks,
+          onChanged: (v) => setState(() => sourceId = v),
+        ),
+        _DropdownField(
+          label: 'To',
+          value: destinationType,
+          values: const ['chunk', 'unallocated', 'outside_account'],
+          labelFor: movementLabel,
+          onChanged: (v) => setState(() {
+            destinationType = v ?? destinationType;
+            destinationId = null;
+          }),
+        ),
+        if (destinationType != 'outside_account')
+          _EntityDropdown(
+            label: 'Destination',
+            type: destinationType == 'chunk' ? 'chunk' : 'unallocated',
+            id: destinationId,
+            accounts: accounts,
+            chunks: chunks,
+            onChanged: (v) => setState(() => destinationId = v),
+          ),
+      ],
+      _MoneyField(label: 'Amount', controller: amount),
+      TextField(
+        controller: note,
+        decoration: const InputDecoration(labelText: 'Note'),
+      ),
+      _SubmitButton(
+        saving: saving,
+        label: 'Add Transfer',
+        onPressed: canAddTransfer ? _save : null,
+      ),
+    ];
+
     return _Page(
       title: 'Transfers',
-      child: ListView(
-        padding: EdgeInsets.all(
-          MediaQuery.sizeOf(context).width < 600 ? 14 : 20,
+      actions: [
+        FilledButton.icon(
+          onPressed: canAddTransfer ? _save : null,
+          icon: saving
+              ? const SizedBox.square(
+                  dimension: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.add),
+          label: const Text('Add Transfer'),
         ),
-        children: [
-          const _Notice(
-            'Use Add Transfer to move existing budget money between unallocated balances and chunks. For unallocated to chunk, choose the account as the source and a chunk in that same account as the destination.',
-          ),
-          const SizedBox(height: 14),
-          _FormCard(
-            scrollable: false,
-            children: [
-              _DropdownField(
-                label: 'Transfer type',
-                value: movementType,
-                values: const ['allocation', 'manual_account_transfer'],
-                labelFor: (value) => value == 'allocation'
-                    ? 'Allocation transfer'
-                    : 'Manual account transfer',
-                onChanged: (v) => setState(() {
-                  movementType = v ?? movementType;
-                  sourceType = 'unallocated';
-                  destinationType = movementType == 'manual_account_transfer'
-                      ? 'unallocated'
-                      : 'chunk';
-                  sourceId = null;
-                  destinationId = null;
-                }),
+      ],
+      child: SingleChildScrollView(
+        padding: EdgeInsets.all(isPhone ? 14 : 20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const _Notice(
+              'Use Add Transfer to move existing budget money between unallocated balances and chunks. For unallocated to chunk, choose the account as the source and a chunk in that same account as the destination.',
+            ),
+            const SizedBox(height: 14),
+            ConstrainedBox(
+              constraints: BoxConstraints(
+                maxWidth: isPhone ? double.infinity : 620,
               ),
-              if (movementType == 'manual_account_transfer') ...[
-                _EntityDropdown(
-                  label: 'From manual account',
-                  type: 'unallocated',
-                  id: sourceId,
-                  accounts: manualAccounts,
-                  chunks: chunks,
-                  onChanged: (v) => setState(() => sourceId = v),
-                ),
-                _EntityDropdown(
-                  label: 'To manual account',
-                  type: 'unallocated',
-                  id: destinationId,
-                  accounts: manualAccounts,
-                  chunks: chunks,
-                  onChanged: (v) => setState(() => destinationId = v),
-                ),
-              ] else ...[
-                _DropdownField(
-                  label: 'From',
-                  value: sourceType,
-                  values: const ['chunk', 'unallocated'],
-                  onChanged: (v) => setState(() {
-                    sourceType = v ?? sourceType;
-                    sourceId = null;
-                  }),
-                ),
-                _EntityDropdown(
-                  label: 'Source',
-                  type: sourceType,
-                  id: sourceId,
-                  accounts: accounts,
-                  chunks: chunks,
-                  onChanged: (v) => setState(() => sourceId = v),
-                ),
-                _DropdownField(
-                  label: 'To',
-                  value: destinationType,
-                  values: const ['chunk', 'unallocated', 'outside_account'],
-                  labelFor: movementLabel,
-                  onChanged: (v) => setState(() {
-                    destinationType = v ?? destinationType;
-                    destinationId = null;
-                  }),
-                ),
-                if (destinationType != 'outside_account')
-                  _EntityDropdown(
-                    label: 'Destination',
-                    type: destinationType == 'chunk' ? 'chunk' : 'unallocated',
-                    id: destinationId,
-                    accounts: accounts,
-                    chunks: chunks,
-                    onChanged: (v) => setState(() => destinationId = v),
+              child: FocusTraversalGroup(
+                policy: ReadingOrderTraversalPolicy(),
+                child: Card(
+                  child: Padding(
+                    padding: EdgeInsets.all(isPhone ? 14 : 16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: formFields
+                          .map(
+                            (child) => Padding(
+                              padding: const EdgeInsets.only(bottom: 12),
+                              child: child,
+                            ),
+                          )
+                          .toList(),
+                    ),
                   ),
-              ],
-              _MoneyField(label: 'Amount', controller: amount),
-              TextField(
-                controller: note,
-                decoration: const InputDecoration(labelText: 'Note'),
+                ),
               ),
-              _SubmitButton(
-                saving: saving,
-                label: 'Add Transfer',
-                onPressed: !widget.canEdit || sourceId == null ? null : _save,
-              ),
-            ],
-          ),
-          const SizedBox(height: 20),
-          _SectionTitle('Movement Log'),
-          _DataCard(
-            emptyText: 'No movements yet',
-            children: listOfMaps(widget.data['recent_money_movements']).map((
-              m,
-            ) {
-              return _ListRow(
-                title: '${m['source_type']} to ${m['destination_type']}',
-                subtitle: m['note'].toString(),
-                trailing: money(m['amount']),
-              );
-            }).toList(),
-          ),
-        ],
+            ),
+            const SizedBox(height: 20),
+            _SectionTitle('Movement Log'),
+            _DataCard(
+              emptyText: 'No movements yet',
+              children: listOfMaps(widget.data['recent_money_movements']).map((
+                m,
+              ) {
+                return _ListRow(
+                  title: '${m['source_type']} to ${m['destination_type']}',
+                  subtitle: m['note'].toString(),
+                  trailing: money(m['amount']),
+                );
+              }).toList(),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -2920,9 +2963,8 @@ class _ListRow extends StatelessWidget {
 }
 
 class _FormCard extends StatelessWidget {
-  const _FormCard({required this.children, this.scrollable = true});
+  const _FormCard({required this.children});
   final List<Widget> children;
-  final bool scrollable;
 
   @override
   Widget build(BuildContext context) {
@@ -2949,8 +2991,6 @@ class _FormCard extends StatelessWidget {
         ),
       ),
     );
-
-    if (!scrollable) return card;
 
     return ListView(
       padding: EdgeInsets.all(isPhone ? 14 : 20),
