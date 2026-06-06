@@ -118,7 +118,7 @@ class AcceptInvitationIn(BaseModel):
 class PaycheckProfileIn(BaseModel):
     id: int | None = None
     name: str = "Paycheck"
-    gross_pay_amount: float = Field(ge=0)
+    gross_pay_amount: float | None = Field(default=None, ge=0)
     net_pay_amount: float = Field(ge=0)
     net_pay_mode: Literal["manual", "expected", "estimated"] = "expected"
     pay_frequency: Literal["weekly", "biweekly", "semimonthly", "monthly", "custom"]
@@ -128,8 +128,11 @@ class PaycheckProfileIn(BaseModel):
 class ChunkIn(BaseModel):
     name: str = Field(min_length=1)
     account_id: int
+    chunk_type: Literal["standard", "loan"] = "standard"
     amount_per_paycheck: float = Field(ge=0)
     balance: float = Field(default=0, ge=0)
+    loan_balance: float | None = Field(default=None, ge=0)
+    loan_interest_rate: float | None = Field(default=None, ge=0)
     is_active: bool = True
 
 
@@ -242,8 +245,11 @@ def init_db() -> None:
                 profile_id INTEGER NOT NULL DEFAULT 1 REFERENCES budget_profiles(id),
                 name TEXT NOT NULL,
                 account_id INTEGER NOT NULL REFERENCES accounts(id),
+                chunk_type TEXT NOT NULL DEFAULT 'standard',
                 amount_per_paycheck REAL NOT NULL,
                 balance REAL NOT NULL DEFAULT 0,
+                loan_balance REAL,
+                loan_interest_rate REAL,
                 is_active INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
@@ -278,6 +284,10 @@ def init_db() -> None:
                 destination_id INTEGER,
                 amount REAL NOT NULL,
                 note TEXT NOT NULL DEFAULT '',
+                source_balance_before REAL,
+                source_balance_after REAL,
+                destination_balance_before REAL,
+                destination_balance_after REAL,
                 created_at TEXT NOT NULL
             );
 
@@ -331,6 +341,15 @@ def migrate_db(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE user_profile_access ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0")
     if not column_exists(conn, "money_movements", "movement_type"):
         conn.execute("ALTER TABLE money_movements ADD COLUMN movement_type TEXT NOT NULL DEFAULT 'allocation'")
+    for column in ["source_balance_before", "source_balance_after", "destination_balance_before", "destination_balance_after"]:
+        if not column_exists(conn, "money_movements", column):
+            conn.execute(f"ALTER TABLE money_movements ADD COLUMN {column} REAL")
+    if not column_exists(conn, "budget_chunks", "chunk_type"):
+        conn.execute("ALTER TABLE budget_chunks ADD COLUMN chunk_type TEXT NOT NULL DEFAULT 'standard'")
+    if not column_exists(conn, "budget_chunks", "loan_balance"):
+        conn.execute("ALTER TABLE budget_chunks ADD COLUMN loan_balance REAL")
+    if not column_exists(conn, "budget_chunks", "loan_interest_rate"):
+        conn.execute("ALTER TABLE budget_chunks ADD COLUMN loan_interest_rate REAL")
     if not column_exists(conn, "paycheck_profiles", "profile_id"):
         conn.execute("ALTER TABLE paycheck_profiles ADD COLUMN profile_id INTEGER NOT NULL DEFAULT 1 REFERENCES budget_profiles(id)")
     if not column_exists(conn, "paycheck_profiles", "name"):
@@ -466,6 +485,36 @@ def account_summaries(conn: sqlite3.Connection, profile_id: int = 1, include_ina
 
 def account_summary(conn: sqlite3.Connection, account_id: int, profile_id: int = 1) -> dict[str, Any] | None:
     return next((account for account in account_summaries(conn, profile_id) if account["id"] == account_id), None)
+
+
+def payments_per_year(pay_frequency: str) -> float:
+    return {
+        "weekly": 52,
+        "biweekly": 26,
+        "semimonthly": 24,
+        "monthly": 12,
+    }.get(pay_frequency, 26)
+
+
+def updated_loan_balance(current_balance: Any, annual_rate: Any, payment: float, pay_frequency: str) -> float | None:
+    if current_balance is None:
+        return None
+    balance = float(current_balance)
+    rate = float(annual_rate or 0) / 100
+    periodic_rate = rate / payments_per_year(pay_frequency)
+    return max(0, balance * (1 + periodic_rate) - payment)
+
+
+def movement_endpoint_balance(conn: sqlite3.Connection, endpoint_type: str, endpoint_id: int | None, profile_id: int) -> float | None:
+    if endpoint_type == "chunk" and endpoint_id is not None:
+        chunk = conn.execute("SELECT balance FROM budget_chunks WHERE id = ? AND profile_id = ?", (endpoint_id, profile_id)).fetchone()
+        return float(chunk["balance"]) if chunk else None
+    if endpoint_type in ("unallocated", "account") and endpoint_id is not None:
+        summary = account_summary(conn, endpoint_id, profile_id)
+        if not summary:
+            return None
+        return float(summary["unallocated_balance"] if endpoint_type == "unallocated" else summary["balance"])
+    return None
 
 
 @app.get("/api/health")
@@ -880,7 +929,7 @@ def upsert_paycheck_profile(payload: PaycheckProfileIn, profile_id: int = 1) -> 
                 """,
                 (
                     payload.name.strip() or "Paycheck",
-                    payload.gross_pay_amount,
+                    payload.gross_pay_amount if payload.gross_pay_amount is not None else payload.net_pay_amount,
                     payload.net_pay_amount,
                     payload.net_pay_mode,
                     payload.pay_frequency,
@@ -901,7 +950,7 @@ def upsert_paycheck_profile(payload: PaycheckProfileIn, profile_id: int = 1) -> 
                 (
                     profile_id,
                     payload.name.strip() or "Paycheck",
-                    payload.gross_pay_amount,
+                    payload.gross_pay_amount if payload.gross_pay_amount is not None else payload.net_pay_amount,
                     payload.net_pay_amount,
                     payload.net_pay_mode,
                     payload.pay_frequency,
@@ -945,15 +994,18 @@ def create_chunk(payload: ChunkIn, profile_id: int = 1) -> dict[str, Any]:
         cursor = conn.execute(
             """
             INSERT INTO budget_chunks
-                (profile_id, name, account_id, amount_per_paycheck, balance, is_active, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (profile_id, name, account_id, chunk_type, amount_per_paycheck, balance, loan_balance, loan_interest_rate, is_active, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 profile_id,
                 payload.name,
                 payload.account_id,
+                payload.chunk_type,
                 payload.amount_per_paycheck,
                 payload.balance,
+                payload.loan_balance if payload.chunk_type == "loan" else None,
+                payload.loan_interest_rate if payload.chunk_type == "loan" else None,
                 int(payload.is_active),
                 stamp,
                 stamp,
@@ -983,15 +1035,18 @@ def update_chunk(chunk_id: int, payload: ChunkIn, profile_id: int = 1) -> dict[s
         conn.execute(
             """
             UPDATE budget_chunks
-            SET name = ?, account_id = ?, amount_per_paycheck = ?, balance = ?,
-                is_active = ?, updated_at = ?
+            SET name = ?, account_id = ?, chunk_type = ?, amount_per_paycheck = ?, balance = ?,
+                loan_balance = ?, loan_interest_rate = ?, is_active = ?, updated_at = ?
             WHERE id = ?
             """,
             (
                 payload.name,
                 payload.account_id,
+                payload.chunk_type,
                 payload.amount_per_paycheck,
                 payload.balance,
+                payload.loan_balance if payload.chunk_type == "loan" else None,
+                payload.loan_interest_rate if payload.chunk_type == "loan" else None,
                 int(payload.is_active),
                 now(),
                 chunk_id,
@@ -1070,6 +1125,19 @@ def add_paycheck(payload: AddPaycheckIn, profile_id: int = 1) -> dict[str, Any]:
             if amount <= 0:
                 break
             conn.execute("UPDATE budget_chunks SET balance = balance + ?, updated_at = ? WHERE id = ?", (amount, stamp, chunk["id"]))
+            loan_balance_after = None
+            if chunk["chunk_type"] == "loan":
+                loan_balance_after = updated_loan_balance(
+                    chunk["loan_balance"],
+                    chunk["loan_interest_rate"],
+                    amount,
+                    profile["pay_frequency"],
+                )
+                if loan_balance_after is not None:
+                    conn.execute(
+                        "UPDATE budget_chunks SET loan_balance = ?, updated_at = ? WHERE id = ?",
+                        (loan_balance_after, stamp, chunk["id"]),
+                    )
             conn.execute(
                 """
                 INSERT INTO paycheck_allocations (paycheck_id, chunk_id, amount, created_at)
@@ -1077,7 +1145,7 @@ def add_paycheck(payload: AddPaycheckIn, profile_id: int = 1) -> dict[str, Any]:
                 """,
                 (paycheck_id, chunk["id"], amount, stamp),
             )
-            allocations.append({"chunk_id": chunk["id"], "chunk_name": chunk["name"], "amount": amount})
+            allocations.append({"chunk_id": chunk["id"], "chunk_name": chunk["name"], "amount": amount, "loan_balance_after": loan_balance_after})
             remaining -= amount
 
         paycheck = row_to_dict(conn.execute("SELECT * FROM paychecks WHERE id = ?", (paycheck_id,)).fetchone())
@@ -1120,6 +1188,9 @@ def create_money_movement(payload: MoneyMovementIn, profile_id: int = 1) -> dict
             source_summary = account_summary(conn, payload.source_id, profile_id)
             if not source_summary or source_summary["unallocated_balance"] < payload.amount:
                 raise HTTPException(status_code=400, detail="Source account does not have enough unallocated money")
+            source_before = float(source_summary["unallocated_balance"])
+            destination_summary = account_summary(conn, payload.destination_id, profile_id)
+            destination_before = float(destination_summary["unallocated_balance"]) if destination_summary else None
             conn.execute(
                 "UPDATE accounts SET balance = balance - ?, updated_at = ? WHERE id = ?",
                 (payload.amount, stamp, payload.source_id),
@@ -1131,8 +1202,9 @@ def create_money_movement(payload: MoneyMovementIn, profile_id: int = 1) -> dict
             cursor = conn.execute(
                 """
                 INSERT INTO money_movements
-                    (profile_id, movement_type, source_type, source_id, destination_type, destination_id, amount, note, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (profile_id, movement_type, source_type, source_id, destination_type, destination_id, amount, note,
+                     source_balance_before, source_balance_after, destination_balance_before, destination_balance_after, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     profile_id,
@@ -1143,6 +1215,10 @@ def create_money_movement(payload: MoneyMovementIn, profile_id: int = 1) -> dict
                     payload.destination_id,
                     payload.amount,
                     payload.note,
+                    source_before,
+                    source_before - payload.amount,
+                    destination_before,
+                    None if destination_before is None else destination_before + payload.amount,
                     stamp,
                 ),
             )
@@ -1163,6 +1239,7 @@ def create_money_movement(payload: MoneyMovementIn, profile_id: int = 1) -> dict
             source_account_id = source_chunk["account_id"]
             if source_chunk["balance"] < payload.amount:
                 raise HTTPException(status_code=400, detail="Chunk does not have enough allocated money")
+            source_balance_before = float(source_chunk["balance"])
             conn.execute(
                 "UPDATE budget_chunks SET balance = balance - ?, updated_at = ? WHERE id = ?",
                 (payload.amount, stamp, payload.source_id),
@@ -1176,6 +1253,9 @@ def create_money_movement(payload: MoneyMovementIn, profile_id: int = 1) -> dict
                 raise HTTPException(status_code=404, detail="Source account not found")
             if source["unallocated_balance"] < payload.amount:
                 raise HTTPException(status_code=400, detail="Account does not have enough unallocated money")
+            source_balance_before = float(source["unallocated_balance"])
+        else:
+            source_balance_before = None
 
         if payload.destination_type == "chunk":
             if payload.destination_id is None:
@@ -1196,6 +1276,7 @@ def create_money_movement(payload: MoneyMovementIn, profile_id: int = 1) -> dict
                         status_code=400,
                         detail="Destination account needs enough unallocated money before a cross-account chunk transfer can be logged",
                     )
+            destination_balance_before = float(destination_chunk["balance"])
             conn.execute(
                 "UPDATE budget_chunks SET balance = balance + ?, updated_at = ? WHERE id = ?",
                 (payload.amount, stamp, payload.destination_id),
@@ -1213,7 +1294,9 @@ def create_money_movement(payload: MoneyMovementIn, profile_id: int = 1) -> dict
                         status_code=400,
                         detail="Destination account balance must already reflect the bank/account transfer before it can be logged",
                     )
+            destination_balance_before = movement_endpoint_balance(conn, "account", payload.destination_id, profile_id)
         elif payload.destination_type == "unallocated":
+            destination_balance_before = movement_endpoint_balance(conn, "unallocated", destination_id or source_account_id, profile_id)
             if payload.source_type == "chunk":
                 if destination_id is None:
                     destination_id = source_account_id
@@ -1231,13 +1314,20 @@ def create_money_movement(payload: MoneyMovementIn, profile_id: int = 1) -> dict
                         detail="Unallocated money cannot be logically moved to another account without a bank/account transfer first",
                     )
         elif payload.destination_type == "outside_account":
+            destination_balance_before = None
             pass
+        else:
+            destination_balance_before = movement_endpoint_balance(conn, payload.destination_type, destination_id, profile_id)
+
+        source_balance_after = movement_endpoint_balance(conn, payload.source_type, payload.source_id, profile_id)
+        destination_balance_after = movement_endpoint_balance(conn, payload.destination_type, destination_id, profile_id)
 
         cursor = conn.execute(
             """
             INSERT INTO money_movements
-                (profile_id, movement_type, source_type, source_id, destination_type, destination_id, amount, note, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (profile_id, movement_type, source_type, source_id, destination_type, destination_id, amount, note,
+                 source_balance_before, source_balance_after, destination_balance_before, destination_balance_after, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 profile_id,
@@ -1248,6 +1338,10 @@ def create_money_movement(payload: MoneyMovementIn, profile_id: int = 1) -> dict
                 destination_id,
                 payload.amount,
                 payload.note,
+                source_balance_before,
+                source_balance_after,
+                destination_balance_before,
+                destination_balance_after,
                 stamp,
             ),
         )

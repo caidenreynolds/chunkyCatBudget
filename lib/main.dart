@@ -1034,7 +1034,7 @@ class _PhoneShell extends StatelessWidget {
     required this.child,
   });
 
-  static const routes = [0, 4, 5, 2, 9];
+  static const routes = [0, 8, 5, 3, 9];
 
   final int selected;
   final ValueChanged<int> onSelect;
@@ -1077,9 +1077,9 @@ class _PhoneShell extends StatelessWidget {
             label: 'Home',
           ),
           NavigationDestination(
-            icon: Icon(Icons.add_circle_outline),
-            selectedIcon: Icon(Icons.add_circle),
-            label: 'Paycheck',
+            icon: Icon(Icons.fact_check_outlined),
+            selectedIcon: Icon(Icons.fact_check),
+            label: 'Overview',
           ),
           NavigationDestination(
             icon: Icon(Icons.swap_horiz_outlined),
@@ -1087,9 +1087,9 @@ class _PhoneShell extends StatelessWidget {
             label: 'Transfer',
           ),
           NavigationDestination(
-            icon: Icon(Icons.account_balance_wallet_outlined),
-            selectedIcon: Icon(Icons.account_balance_wallet),
-            label: 'Accounts',
+            icon: Icon(Icons.savings_outlined),
+            selectedIcon: Icon(Icons.savings),
+            label: 'Chunks',
           ),
           NavigationDestination(
             icon: Icon(Icons.menu),
@@ -1678,7 +1678,6 @@ class PaycheckSetupScreen extends StatefulWidget {
 
 class _PaycheckSetupScreenState extends State<PaycheckSetupScreen> {
   final profileName = TextEditingController(text: 'Paycheck');
-  final gross = TextEditingController();
   final net = TextEditingController();
   var mode = 'expected';
   var frequency = 'biweekly';
@@ -1696,7 +1695,6 @@ class _PaycheckSetupScreenState extends State<PaycheckSetupScreen> {
   @override
   void dispose() {
     profileName.dispose();
-    gross.dispose();
     net.dispose();
     super.dispose();
   }
@@ -1704,7 +1702,6 @@ class _PaycheckSetupScreenState extends State<PaycheckSetupScreen> {
   void _loadProfile(Map<String, dynamic> profile) {
     selectedPaycheckProfileId = profile['id'] as int?;
     profileName.text = profile['name']?.toString() ?? 'Paycheck';
-    gross.text = '${profile['gross_pay_amount'] ?? ''}';
     net.text = '${profile['net_pay_amount'] ?? ''}';
     mode = profile['net_pay_mode']?.toString() ?? mode;
     frequency = profile['pay_frequency']?.toString() ?? frequency;
@@ -1715,7 +1712,6 @@ class _PaycheckSetupScreenState extends State<PaycheckSetupScreen> {
     setState(() {
       selectedPaycheckProfileId = null;
       profileName.text = 'Paycheck';
-      gross.clear();
       net.clear();
       mode = 'expected';
       frequency = 'biweekly';
@@ -1756,13 +1752,22 @@ class _PaycheckSetupScreenState extends State<PaycheckSetupScreen> {
             controller: profileName,
             decoration: const InputDecoration(labelText: 'Profile name'),
           ),
-          _MoneyField(label: 'Gross pay amount', controller: gross),
-          _MoneyField(label: 'Net pay amount', controller: net),
+          _MoneyField(label: 'Net paycheck amount', controller: net),
           _DropdownField(
             label: 'Net pay mode',
             value: mode,
             values: const ['manual', 'expected', 'estimated'],
+            labelFor: (value) => switch (value) {
+              'manual' => 'Manual exact amount',
+              'expected' => 'Expected recurring amount',
+              'estimated' => 'Estimated amount',
+              _ => value,
+            },
             onChanged: (v) => setState(() => mode = v ?? mode),
+          ),
+          const _BalanceHint(
+            text:
+                'Net pay mode is a label for how confident this net amount is. Manual is exact, expected is your normal recurring amount, and estimated is a planning placeholder.',
           ),
           _DropdownField(
             label: 'Pay frequency',
@@ -1808,7 +1813,6 @@ class _PaycheckSetupScreenState extends State<PaycheckSetupScreen> {
       final saved = await widget.api.post('/api/paycheck-profile', {
         'id': selectedPaycheckProfileId,
         'name': profileName.text,
-        'gross_pay_amount': parseMoney(gross.text),
         'net_pay_amount': parseMoney(net.text),
         'net_pay_mode': mode,
         'pay_frequency': frequency,
@@ -2192,7 +2196,7 @@ class _AccountCreateCardState extends State<_AccountCreateCard> {
   }
 }
 
-class ChunksScreen extends StatelessWidget {
+class ChunksScreen extends StatefulWidget {
   const ChunksScreen({
     super.key,
     required this.data,
@@ -2206,18 +2210,45 @@ class ChunksScreen extends StatelessWidget {
   final bool canEdit;
 
   @override
+  State<ChunksScreen> createState() => _ChunksScreenState();
+}
+
+class _ChunksScreenState extends State<ChunksScreen> {
+  final selectedChunkIds = <int>{};
+  var selecting = false;
+
+  @override
   Widget build(BuildContext context) {
     final isPhone = MediaQuery.sizeOf(context).width < 600;
-    final chunks = listOfMaps(data['chunks']);
-    final accounts = listOfMaps(data['accounts']);
+    final chunks = listOfMaps(widget.data['chunks']);
+    final accounts = listOfMaps(widget.data['accounts']);
     return _Page(
       title: 'Chunks',
-      actions: canEdit
+      actions: widget.canEdit
           ? [
+              IconButton(
+                onPressed: () => setState(() {
+                  selecting = !selecting;
+                  selectedChunkIds.clear();
+                }),
+                tooltip: selecting ? 'Cancel selection' : 'Select chunks',
+                icon: Icon(selecting ? Icons.close : Icons.checklist),
+              ),
+              if (selecting)
+                IconButton(
+                  onPressed: selectedChunkIds.isEmpty ? null : _deleteSelected,
+                  tooltip: 'Delete selected chunks',
+                  icon: const Icon(Icons.delete_outline),
+                ),
               FilledButton.icon(
                 onPressed: accounts.isEmpty
                     ? null
-                    : () => showChunkDialog(context, api, refresh, accounts),
+                    : () => showChunkDialog(
+                        context,
+                        widget.api,
+                        widget.refresh,
+                        accounts,
+                      ),
                 icon: const Icon(Icons.add),
                 label: const Text('New'),
               ),
@@ -2231,17 +2262,79 @@ class ChunksScreen extends StatelessWidget {
                 ? 'Create an account before adding chunks'
                 : 'Create chunks that apply once per paycheck',
             children: chunks.map((c) {
+              final id = c['id'] as int;
+              final selected = selectedChunkIds.contains(id);
+              final type = c['chunk_type']?.toString() == 'loan'
+                  ? 'Loan'
+                  : 'Standard';
+              final loanText = c['chunk_type']?.toString() == 'loan'
+                  ? '  |  Loan balance ${money(c['loan_balance'])}  |  APR ${c['loan_interest_rate'] ?? 0}%'
+                  : '';
               return _ListRow(
-                title: c['name'].toString(),
+                title: selecting
+                    ? '${selected ? '✓ ' : ''}${c['name']}'
+                    : c['name'].toString(),
                 subtitle:
-                    '${c['account_name']}  |  ${money(c['amount_per_paycheck'])} per paycheck',
+                    '$type  |  ${c['account_name']}  |  ${money(c['amount_per_paycheck'])} per paycheck$loanText',
                 trailing: money(c['balance']),
+                onTap: selecting
+                    ? () => setState(() {
+                        selected
+                            ? selectedChunkIds.remove(id)
+                            : selectedChunkIds.add(id);
+                      })
+                    : widget.canEdit
+                    ? () => showChunkDialog(
+                        context,
+                        widget.api,
+                        widget.refresh,
+                        accounts,
+                        chunk: c,
+                      )
+                    : null,
               );
             }).toList(),
           ),
         ],
       ),
     );
+  }
+
+  Future<void> _deleteSelected() async {
+    final count = selectedChunkIds.length;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete Chunks'),
+        content: Text(
+          'Delete $count selected chunk${count == 1 ? '' : 's'}? Chunk balances will return to unallocated money in their account. This cannot be undone.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      for (final id in selectedChunkIds) {
+        await widget.api.delete('/api/chunks/$id');
+      }
+      selectedChunkIds.clear();
+      setState(() => selecting = false);
+      widget.refresh();
+      if (!mounted) return;
+      toast(context, 'Chunks deleted');
+    } catch (error) {
+      if (!mounted) return;
+      toast(context, error.toString());
+    }
   }
 }
 
@@ -3098,14 +3191,19 @@ class MobileMoreScreen extends StatelessWidget {
             onTap: () => goTo(1),
           ),
           _MoreTile(
+            icon: Icons.add_circle_outline,
+            title: 'Add Paycheck',
+            onTap: () => goTo(4),
+          ),
+          _MoreTile(
+            icon: Icons.account_balance_wallet_outlined,
+            title: 'Accounts',
+            onTap: () => goTo(2),
+          ),
+          _MoreTile(
             icon: Icons.fact_check_outlined,
             title: 'Budget Overview',
             onTap: () => goTo(8),
-          ),
-          _MoreTile(
-            icon: Icons.savings_outlined,
-            title: 'Chunks',
-            onTap: () => goTo(3),
           ),
           _MoreTile(
             icon: Icons.receipt_long_outlined,
@@ -3692,35 +3790,82 @@ Future<void> showChunkDialog(
   BuildContext context,
   BudgetApi api,
   VoidCallback refresh,
-  List<Map<String, dynamic>> accounts,
-) async {
-  final name = TextEditingController();
-  final amount = TextEditingController();
-  var accountId = accounts.first['id'] as int;
+  List<Map<String, dynamic>> accounts, {
+  Map<String, dynamic>? chunk,
+}) async {
+  final name = TextEditingController(text: chunk?['name']?.toString() ?? '');
+  final amount = TextEditingController(
+    text: chunk?['amount_per_paycheck']?.toString() ?? '',
+  );
+  final loanBalance = TextEditingController(
+    text: chunk?['loan_balance']?.toString() ?? '',
+  );
+  final loanRate = TextEditingController(
+    text: chunk?['loan_interest_rate']?.toString() ?? '',
+  );
+  var accountId = chunk?['account_id'] as int? ?? accounts.first['id'] as int;
+  var chunkType = chunk?['chunk_type']?.toString() ?? 'standard';
+  final isEditing = chunk != null;
   await showDialog<void>(
     context: context,
     builder: (context) => StatefulBuilder(
       builder: (context, setState) => AlertDialog(
-        title: const Text('New Chunk'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: name,
-              decoration: const InputDecoration(labelText: 'Name'),
-            ),
-            const SizedBox(height: 12),
-            _DropdownField<int>(
-              label: 'Account',
-              value: accountId,
-              values: accounts.map((a) => a['id'] as int).toList(),
-              labelFor: (id) =>
-                  accounts.firstWhere((a) => a['id'] == id)['name'].toString(),
-              onChanged: (v) => setState(() => accountId = v ?? accountId),
-            ),
-            const SizedBox(height: 12),
-            _MoneyField(label: 'Amount per paycheck', controller: amount),
-          ],
+        title: Text(isEditing ? 'Edit Chunk' : 'New Chunk'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: name,
+                decoration: const InputDecoration(labelText: 'Name'),
+              ),
+              const SizedBox(height: 12),
+              _DropdownField<int>(
+                label: 'Account',
+                value: accountId,
+                values: accounts.map((a) => a['id'] as int).toList(),
+                labelFor: (id) => accounts
+                    .firstWhere((a) => a['id'] == id)['name']
+                    .toString(),
+                onChanged: (v) => setState(() => accountId = v ?? accountId),
+              ),
+              const SizedBox(height: 12),
+              _DropdownField(
+                label: 'Chunk type',
+                value: chunkType,
+                values: const ['standard', 'loan'],
+                labelFor: (value) => value == 'loan' ? 'Loan' : 'Standard',
+                onChanged: (v) => setState(() => chunkType = v ?? chunkType),
+              ),
+              const SizedBox(height: 12),
+              _MoneyField(label: 'Amount per paycheck', controller: amount),
+              if (chunkType == 'loan') ...[
+                const SizedBox(height: 12),
+                _MoneyField(
+                  label: 'Current loan balance',
+                  controller: loanBalance,
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: loanRate,
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
+                  inputFormatters: [
+                    FilteringTextInputFormatter.allow(RegExp(r'[0-9.]')),
+                  ],
+                  decoration: const InputDecoration(
+                    labelText: 'Interest rate APR %',
+                  ),
+                ),
+                const SizedBox(height: 12),
+                const _BalanceHint(
+                  text:
+                      'Beta loan chunks estimate balance by applying interest once per paycheck period, then subtracting the paycheck amount.',
+                ),
+              ],
+            ],
+          ),
         ),
         actions: [
           TextButton(
@@ -3729,17 +3874,31 @@ Future<void> showChunkDialog(
           ),
           FilledButton(
             onPressed: () async {
-              await api.post('/api/chunks', {
+              final payload = {
                 'name': name.text,
                 'account_id': accountId,
+                'chunk_type': chunkType,
                 'amount_per_paycheck': parseMoney(amount.text),
-                'balance': 0,
-                'is_active': true,
-              });
+                'balance': chunk?['balance'] ?? 0,
+                'loan_balance':
+                    chunkType == 'loan' && loanBalance.text.isNotEmpty
+                    ? parseMoney(loanBalance.text)
+                    : null,
+                'loan_interest_rate':
+                    chunkType == 'loan' && loanRate.text.isNotEmpty
+                    ? parseMoney(loanRate.text)
+                    : null,
+                'is_active': chunk?['is_active'] ?? true,
+              };
+              if (isEditing) {
+                await api.put('/api/chunks/${chunk['id']}', payload);
+              } else {
+                await api.post('/api/chunks', payload);
+              }
               refresh();
               if (context.mounted) Navigator.pop(context);
             },
-            child: const Text('Create'),
+            child: Text(isEditing ? 'Save' : 'Create'),
           ),
         ],
       ),
@@ -3786,6 +3945,11 @@ String formatDateTime(dynamic value) {
   return DateFormat('yyyy-MM-dd HH:mm').format(parsed.toLocal());
 }
 
+String balanceBeforeAfterText(dynamic before, dynamic after) {
+  if (before == null && after == null) return 'Not recorded';
+  return '${money(before)} before -> ${money(after)} after';
+}
+
 void showTransferDetails(
   BuildContext context,
   Map<String, dynamic> movement,
@@ -3819,6 +3983,20 @@ void showTransferDetails(
             ),
           ),
           _DetailLine(label: 'Amount', value: money(movement['amount'])),
+          _DetailLine(
+            label: 'Source',
+            value: balanceBeforeAfterText(
+              movement['source_balance_before'],
+              movement['source_balance_after'],
+            ),
+          ),
+          _DetailLine(
+            label: 'Dest.',
+            value: balanceBeforeAfterText(
+              movement['destination_balance_before'],
+              movement['destination_balance_after'],
+            ),
+          ),
           _DetailLine(
             label: 'Note',
             value: movement['note'].toString().isEmpty

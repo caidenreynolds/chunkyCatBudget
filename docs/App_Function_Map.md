@@ -87,6 +87,16 @@ Navigation indexes:
 - `8` Budget Overview
 - `9` Phone More menu
 
+Phone bottom navigation:
+
+- Home
+- Overview
+- Transfer
+- Chunks
+- More
+
+Phone More contains Paycheck Setup, Add Paycheck, Accounts, Budget Overview, Transactions, and Settings.
+
 ## Dashboard
 
 Frontend:
@@ -120,7 +130,9 @@ Frontend:
 
 - `PaycheckSetupScreen` manages multiple paycheck profiles.
 - `_PaycheckSetupScreenState` lets the user select an existing paycheck profile or create a new one.
-- Each paycheck profile stores name, gross pay, net pay, net pay mode, pay frequency, and default deposit account.
+- Each paycheck profile stores name, net pay, net pay mode, pay frequency, and default deposit account.
+- Gross pay is intentionally hidden from the UI; the backend keeps the old database column for compatibility and stores gross as net for new/updated profiles.
+- Net pay mode is currently a confidence/planning label: manual exact amount, expected recurring amount, or estimated placeholder.
 
 Backend:
 
@@ -186,6 +198,8 @@ Important rules:
 Frontend:
 
 - `ChunksScreen` lists chunks and opens chunk creation/edit dialogs.
+- `ChunksScreen` supports select/delete mode. Deleting a chunk removes its allocated balance from chunk totals, which returns that amount to the account's computed unallocated balance.
+- Chunk rows can be opened to rename chunks, change account, change amount per paycheck, and edit loan settings.
 - `showChunkDialog()` creates or edits a chunk.
 
 Backend:
@@ -201,6 +215,8 @@ Important rules:
 - Chunks belong to one account.
 - Chunk balances contribute to account allocated balance.
 - Account unallocated balance is account balance minus active chunk balances.
+- Standard chunks track allocated budget money.
+- Loan chunks are beta. They support an optional current loan balance and APR. During paycheck allocation, the app applies one pay-period of interest and then subtracts the chunk payment from the loan balance.
 
 ## Transfers
 
@@ -212,6 +228,7 @@ Frontend:
 - `showTransferDetails()` opens a details dialog from Dashboard or Transfers.
 - `movementEndpointName()` converts source/destination IDs into readable account/chunk labels.
 - `_BalanceHint` displays current source/destination balances.
+- New transfer records store source/destination balance before and after the movement. Older transfers show `Not recorded`.
 
 Backend:
 
