@@ -74,7 +74,7 @@ class BudgetApi {
         path == '/api/accounts' ||
         path.startsWith('/api/accounts/') ||
         path == '/api/paycheck-profile' ||
-        path == '/api/paycheck-profiles' ||
+        path.startsWith('/api/paycheck-profiles') ||
         path == '/api/chunks' ||
         path.startsWith('/api/chunks/') ||
         path.startsWith('/api/paychecks') ||
@@ -1688,6 +1688,7 @@ class _PaycheckSetupScreenState extends State<PaycheckSetupScreen> {
   @override
   void initState() {
     super.initState();
+    net.addListener(() => setState(() {}));
     final profiles = listOfMaps(widget.data['paycheck_profiles']);
     if (profiles.isNotEmpty) _loadProfile(profiles.first);
   }
@@ -1795,12 +1796,20 @@ class _PaycheckSetupScreenState extends State<PaycheckSetupScreen> {
             icon: const Icon(Icons.add),
             label: const Text('New Paycheck Profile'),
           ),
+          if (selectedPaycheckProfileId != null)
+            OutlinedButton.icon(
+              onPressed: widget.canEdit ? _deleteProfile : null,
+              icon: const Icon(Icons.delete_outline),
+              label: const Text('Delete Paycheck Profile'),
+            ),
           _SubmitButton(
             saving: saving,
             label: selectedPaycheckProfileId == null
                 ? 'Create Profile'
                 : 'Save Profile',
-            onPressed: widget.canEdit ? _save : null,
+            onPressed: widget.canEdit && parseMoney(net.text) > 0
+                ? _save
+                : null,
           ),
         ],
       ),
@@ -1808,6 +1817,10 @@ class _PaycheckSetupScreenState extends State<PaycheckSetupScreen> {
   }
 
   Future<void> _save() async {
+    if (parseMoney(net.text) <= 0) {
+      toast(context, 'Net paycheck amount must be greater than zero.');
+      return;
+    }
     setState(() => saving = true);
     try {
       final saved = await widget.api.post('/api/paycheck-profile', {
@@ -1827,6 +1840,41 @@ class _PaycheckSetupScreenState extends State<PaycheckSetupScreen> {
       toast(context, error.toString());
     } finally {
       if (mounted) setState(() => saving = false);
+    }
+  }
+
+  Future<void> _deleteProfile() async {
+    final id = selectedPaycheckProfileId;
+    if (id == null) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete Paycheck Profile'),
+        content: Text(
+          'Delete ${profileName.text}? Existing paycheck history will be kept. This cannot be undone.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      await widget.api.delete('/api/paycheck-profiles/$id');
+      _newProfile();
+      widget.refresh();
+      if (!mounted) return;
+      toast(context, 'Paycheck profile deleted');
+    } catch (error) {
+      if (!mounted) return;
+      toast(context, error.toString());
     }
   }
 }
@@ -2270,13 +2318,18 @@ class _ChunksScreenState extends State<ChunksScreen> {
               final loanText = c['chunk_type']?.toString() == 'loan'
                   ? '  |  Loan balance ${money(c['loan_balance'])}  |  APR ${c['loan_interest_rate'] ?? 0}%'
                   : '';
+              final accountText = c['chunk_type']?.toString() == 'loan'
+                  ? ''
+                  : '  |  ${c['account_name']}';
               return _ListRow(
                 title: selecting
                     ? '${selected ? '✓ ' : ''}${c['name']}'
                     : c['name'].toString(),
                 subtitle:
-                    '$type  |  ${c['account_name']}  |  ${money(c['amount_per_paycheck'])} per paycheck$loanText',
-                trailing: money(c['balance']),
+                    '$type$accountText  |  ${money(c['amount_per_paycheck'])} per paycheck$loanText',
+                trailing: c['chunk_type']?.toString() == 'loan'
+                    ? money(c['loan_balance'])
+                    : money(c['balance']),
                 onTap: selecting
                     ? () => setState(() {
                         selected
@@ -2514,11 +2567,14 @@ class _TransfersScreenState extends State<TransfersScreen> {
         .where((account) => account['source_mode'] != 'bank_connected')
         .toList();
     final chunks = listOfMaps(widget.data['chunks']);
+    final sourceChunks = chunks
+        .where((chunk) => chunk['chunk_type']?.toString() != 'loan')
+        .toList();
     final selectableAccounts = movementType == 'manual_account_transfer'
         ? manualAccounts
         : accounts;
-    sourceId ??= sourceType == 'chunk' && chunks.isNotEmpty
-        ? chunks.first['id'] as int
+    sourceId ??= sourceType == 'chunk' && sourceChunks.isNotEmpty
+        ? sourceChunks.first['id'] as int
         : selectableAccounts.isNotEmpty
         ? selectableAccounts.first['id'] as int
         : null;
@@ -2530,7 +2586,7 @@ class _TransfersScreenState extends State<TransfersScreen> {
 
     final isPhone = MediaQuery.sizeOf(context).width < 600;
     final requiresDestination = destinationType != 'outside_account';
-    final source = _selectedSource(accounts, chunks);
+    final source = _selectedSource(accounts, sourceChunks);
     final destination = _selectedDestination(accounts, chunks);
     final sourceAvailable = _sourceAvailable(source);
     final transferAmount = parseMoney(amount.text);
@@ -2595,7 +2651,7 @@ class _TransfersScreenState extends State<TransfersScreen> {
           type: sourceType,
           id: sourceId,
           accounts: accounts,
-          chunks: chunks,
+          chunks: sourceChunks,
           onChanged: (v) => setState(() => sourceId = v),
         ),
         if (source != null) _BalanceHint(text: _sourceBalanceSummary(source)),
@@ -2805,6 +2861,9 @@ class _TransfersScreenState extends State<TransfersScreen> {
 
   String _destinationBalanceSummary(Map<String, dynamic> destination) {
     if (destinationType == 'chunk') {
+      if (destination['chunk_type']?.toString() == 'loan') {
+        return 'Current ${destination['name']} loan balance: ${money(destination['loan_balance'])}';
+      }
       return 'Current ${destination['name']} balance: ${money(destination['balance'])}';
     }
     return _accountBalanceSummary(destination);
@@ -3820,16 +3879,6 @@ Future<void> showChunkDialog(
                 decoration: const InputDecoration(labelText: 'Name'),
               ),
               const SizedBox(height: 12),
-              _DropdownField<int>(
-                label: 'Account',
-                value: accountId,
-                values: accounts.map((a) => a['id'] as int).toList(),
-                labelFor: (id) => accounts
-                    .firstWhere((a) => a['id'] == id)['name']
-                    .toString(),
-                onChanged: (v) => setState(() => accountId = v ?? accountId),
-              ),
-              const SizedBox(height: 12),
               _DropdownField(
                 label: 'Chunk type',
                 value: chunkType,
@@ -3837,6 +3886,18 @@ Future<void> showChunkDialog(
                 labelFor: (value) => value == 'loan' ? 'Loan' : 'Standard',
                 onChanged: (v) => setState(() => chunkType = v ?? chunkType),
               ),
+              if (chunkType != 'loan') ...[
+                const SizedBox(height: 12),
+                _DropdownField<int>(
+                  label: 'Account',
+                  value: accountId,
+                  values: accounts.map((a) => a['id'] as int).toList(),
+                  labelFor: (id) => accounts
+                      .firstWhere((a) => a['id'] == id)['name']
+                      .toString(),
+                  onChanged: (v) => setState(() => accountId = v ?? accountId),
+                ),
+              ],
               const SizedBox(height: 12),
               _MoneyField(label: 'Amount per paycheck', controller: amount),
               if (chunkType == 'loan') ...[
@@ -3876,7 +3937,7 @@ Future<void> showChunkDialog(
             onPressed: () async {
               final payload = {
                 'name': name.text,
-                'account_id': accountId,
+                'account_id': chunkType == 'loan' ? null : accountId,
                 'chunk_type': chunkType,
                 'amount_per_paycheck': parseMoney(amount.text),
                 'balance': chunk?['balance'] ?? 0,

@@ -133,12 +133,15 @@ Frontend:
 - Each paycheck profile stores name, net pay, net pay mode, pay frequency, and default deposit account.
 - Gross pay is intentionally hidden from the UI; the backend keeps the old database column for compatibility and stores gross as net for new/updated profiles.
 - Net pay mode is currently a confidence/planning label: manual exact amount, expected recurring amount, or estimated placeholder.
+- Net paycheck amount must be greater than zero.
+- Existing paycheck profiles can be renamed, edited, or deleted. Deleting a profile keeps historical paycheck records.
 
 Backend:
 
 - `get_paycheck_profile()` handles legacy `GET /api/paycheck-profile`.
 - `list_paycheck_profiles()` handles `GET /api/paycheck-profiles`.
 - `upsert_paycheck_profile()` handles `POST/PUT /api/paycheck-profile`.
+- `delete_paycheck_profile()` handles `DELETE /api/paycheck-profiles/{paycheck_profile_id}`.
 - `PaycheckProfileIn` is the request model.
 
 Database:
@@ -198,7 +201,7 @@ Important rules:
 Frontend:
 
 - `ChunksScreen` lists chunks and opens chunk creation/edit dialogs.
-- `ChunksScreen` supports select/delete mode. Deleting a chunk removes its allocated balance from chunk totals, which returns that amount to the account's computed unallocated balance.
+- `ChunksScreen` supports select/delete mode. Deleting a chunk archives it, zeroes its allocated balance, and hides it from active chunk lists. This returns that amount to the account's computed unallocated balance while preserving historical references.
 - Chunk rows can be opened to rename chunks, change account, change amount per paycheck, and edit loan settings.
 - `showChunkDialog()` creates or edits a chunk.
 
@@ -216,7 +219,11 @@ Important rules:
 - Chunk balances contribute to account allocated balance.
 - Account unallocated balance is account balance minus active chunk balances.
 - Standard chunks track allocated budget money.
-- Loan chunks are beta. They support an optional current loan balance and APR. During paycheck allocation, the app applies one pay-period of interest and then subtracts the chunk payment from the loan balance.
+- Loan chunks are beta. They do not expose or count against a budget account/chunk allocation balance.
+- Loan chunks support an optional current loan balance and APR. The displayed loan chunk balance is the remaining amount owed.
+- During paycheck allocation, the app applies one pay-period of interest and then subtracts the chunk payment from the loan balance.
+- Transfers cannot originate from loan chunks.
+- Transfers to loan chunks reduce the remaining loan balance and reduce the paying account balance.
 
 ## Transfers
 
@@ -398,6 +405,7 @@ Paycheck profiles and paychecks:
 - `get_paycheck_profile()`
 - `list_paycheck_profiles()`
 - `upsert_paycheck_profile()`
+- `delete_paycheck_profile()`
 - `add_paycheck()`
 - `list_paychecks()`
 

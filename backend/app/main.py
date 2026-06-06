@@ -119,7 +119,7 @@ class PaycheckProfileIn(BaseModel):
     id: int | None = None
     name: str = "Paycheck"
     gross_pay_amount: float | None = Field(default=None, ge=0)
-    net_pay_amount: float = Field(ge=0)
+    net_pay_amount: float = Field(gt=0)
     net_pay_mode: Literal["manual", "expected", "estimated"] = "expected"
     pay_frequency: Literal["weekly", "biweekly", "semimonthly", "monthly", "custom"]
     default_account_id: int | None = None
@@ -127,7 +127,7 @@ class PaycheckProfileIn(BaseModel):
 
 class ChunkIn(BaseModel):
     name: str = Field(min_length=1)
-    account_id: int
+    account_id: int | None = None
     chunk_type: Literal["standard", "loan"] = "standard"
     amount_per_paycheck: float = Field(ge=0)
     balance: float = Field(default=0, ge=0)
@@ -465,7 +465,7 @@ def account_summaries(conn: sqlite3.Connection, profile_id: int = 1, include_ina
         """
         SELECT
             a.*,
-            COALESCE(SUM(CASE WHEN c.is_active = 1 THEN c.balance ELSE 0 END), 0) AS allocated_balance
+            COALESCE(SUM(CASE WHEN c.is_active = 1 AND c.chunk_type != 'loan' THEN c.balance ELSE 0 END), 0) AS allocated_balance
         FROM accounts a
         LEFT JOIN budget_chunks c ON c.account_id = a.id AND c.profile_id = a.profile_id
         WHERE a.profile_id = ? {active_filter}
@@ -507,8 +507,13 @@ def updated_loan_balance(current_balance: Any, annual_rate: Any, payment: float,
 
 def movement_endpoint_balance(conn: sqlite3.Connection, endpoint_type: str, endpoint_id: int | None, profile_id: int) -> float | None:
     if endpoint_type == "chunk" and endpoint_id is not None:
-        chunk = conn.execute("SELECT balance FROM budget_chunks WHERE id = ? AND profile_id = ?", (endpoint_id, profile_id)).fetchone()
-        return float(chunk["balance"]) if chunk else None
+        chunk = conn.execute(
+            "SELECT chunk_type, balance, loan_balance FROM budget_chunks WHERE id = ? AND profile_id = ?",
+            (endpoint_id, profile_id),
+        ).fetchone()
+        if not chunk:
+            return None
+        return float(chunk["loan_balance"] or 0) if chunk["chunk_type"] == "loan" else float(chunk["balance"])
     if endpoint_type in ("unallocated", "account") and endpoint_id is not None:
         summary = account_summary(conn, endpoint_id, profile_id)
         if not summary:
@@ -772,7 +777,7 @@ def dashboard_summary(profile_id: int = 1) -> dict[str, Any]:
                 SELECT c.*, a.name AS account_name
                 FROM budget_chunks c
                 JOIN accounts a ON a.id = c.account_id
-                WHERE c.profile_id = ?
+                WHERE c.profile_id = ? AND c.is_active = 1
                 ORDER BY c.name
                 """,
                 (profile_id,),
@@ -868,7 +873,9 @@ def delete_account(account_id: int, profile_id: int = 1) -> dict[str, bool]:
                 status_code=400,
                 detail="Only zero-balance accounts can be deleted",
             )
-        chunk_count = conn.execute("SELECT COUNT(*) AS count FROM budget_chunks WHERE account_id = ?", (account_id,)).fetchone()["count"]
+        chunk_count = conn.execute(
+            "SELECT COUNT(*) AS count FROM budget_chunks WHERE account_id = ? AND chunk_type != 'loan'", (account_id,)
+        ).fetchone()["count"]
         if chunk_count:
             raise HTTPException(status_code=400, detail="Move this account's chunks before deleting it")
         conn.execute("UPDATE accounts SET is_active = 0, updated_at = ? WHERE id = ?", (now(), account_id))
@@ -885,7 +892,7 @@ def move_account_chunks(account_id: int, payload: MoveAccountChunksIn, profile_i
         if source["id"] == destination["id"]:
             raise HTTPException(status_code=400, detail="Destination account must be different")
         cursor = conn.execute(
-            "UPDATE budget_chunks SET account_id = ?, updated_at = ? WHERE account_id = ? AND profile_id = ?",
+            "UPDATE budget_chunks SET account_id = ?, updated_at = ? WHERE account_id = ? AND profile_id = ? AND chunk_type != 'loan'",
             (payload.destination_account_id, now(), account_id, profile_id),
         )
         return {"moved_chunks": cursor.rowcount}
@@ -962,6 +969,19 @@ def upsert_paycheck_profile(payload: PaycheckProfileIn, profile_id: int = 1) -> 
         return row_to_dict(conn.execute("SELECT * FROM paycheck_profiles WHERE id = ?", (profile_id_to_return,)).fetchone())
 
 
+@app.delete("/api/paycheck-profiles/{paycheck_profile_id}")
+def delete_paycheck_profile(paycheck_profile_id: int, profile_id: int = 1) -> dict[str, bool]:
+    with db() as conn:
+        paycheck_profile = conn.execute(
+            "SELECT * FROM paycheck_profiles WHERE id = ? AND profile_id = ?", (paycheck_profile_id, profile_id)
+        ).fetchone()
+        if not paycheck_profile:
+            raise HTTPException(status_code=404, detail="Paycheck profile not found")
+        conn.execute("UPDATE paychecks SET paycheck_profile_id = NULL WHERE paycheck_profile_id = ?", (paycheck_profile_id,))
+        conn.execute("DELETE FROM paycheck_profiles WHERE id = ?", (paycheck_profile_id,))
+        return {"deleted": True}
+
+
 @app.get("/api/chunks")
 def list_chunks(profile_id: int = 1) -> list[dict[str, Any]]:
     with db() as conn:
@@ -972,7 +992,7 @@ def list_chunks(profile_id: int = 1) -> list[dict[str, Any]]:
                 SELECT c.*, a.name AS account_name
                 FROM budget_chunks c
                 JOIN accounts a ON a.id = c.account_id
-                WHERE c.profile_id = ?
+                WHERE c.profile_id = ? AND c.is_active = 1
                 ORDER BY c.name
                 """,
                 (profile_id,),
@@ -988,7 +1008,15 @@ def create_chunk(payload: ChunkIn, profile_id: int = 1) -> dict[str, Any]:
     stamp = now()
     with db() as conn:
         get_profile_or_404(conn, profile_id)
-        account = get_account_or_404(conn, payload.account_id)
+        account_id = payload.account_id
+        if payload.chunk_type == "loan":
+            account = conn.execute("SELECT * FROM accounts WHERE profile_id = ? ORDER BY is_active DESC, id LIMIT 1", (profile_id,)).fetchone()
+            if not account:
+                raise HTTPException(status_code=400, detail="Create an account before adding a loan chunk")
+            account_id = account["id"]
+        elif account_id is None:
+            raise HTTPException(status_code=400, detail="Chunk account is required")
+        account = get_account_or_404(conn, account_id)
         if account["profile_id"] != profile_id:
             raise HTTPException(status_code=400, detail="Chunk account must belong to the selected budget profile")
         cursor = conn.execute(
@@ -1000,7 +1028,7 @@ def create_chunk(payload: ChunkIn, profile_id: int = 1) -> dict[str, Any]:
             (
                 profile_id,
                 payload.name,
-                payload.account_id,
+                account_id,
                 payload.chunk_type,
                 payload.amount_per_paycheck,
                 payload.balance,
@@ -1029,7 +1057,10 @@ def create_chunk(payload: ChunkIn, profile_id: int = 1) -> dict[str, Any]:
 def update_chunk(chunk_id: int, payload: ChunkIn, profile_id: int = 1) -> dict[str, Any]:
     with db() as conn:
         chunk = get_chunk_or_404(conn, chunk_id)
-        account = get_account_or_404(conn, payload.account_id)
+        account_id = chunk["account_id"] if payload.chunk_type == "loan" else payload.account_id
+        if account_id is None:
+            raise HTTPException(status_code=400, detail="Chunk account is required")
+        account = get_account_or_404(conn, account_id)
         if chunk["profile_id"] != profile_id or account["profile_id"] != profile_id:
             raise HTTPException(status_code=404, detail="Chunk not found")
         conn.execute(
@@ -1041,7 +1072,7 @@ def update_chunk(chunk_id: int, payload: ChunkIn, profile_id: int = 1) -> dict[s
             """,
             (
                 payload.name,
-                payload.account_id,
+                account_id,
                 payload.chunk_type,
                 payload.amount_per_paycheck,
                 payload.balance,
@@ -1072,7 +1103,10 @@ def delete_chunk(chunk_id: int, profile_id: int = 1) -> dict[str, bool]:
         chunk = get_chunk_or_404(conn, chunk_id)
         if chunk["profile_id"] != profile_id:
             raise HTTPException(status_code=404, detail="Chunk not found")
-        conn.execute("DELETE FROM budget_chunks WHERE id = ?", (chunk_id,))
+        conn.execute(
+            "UPDATE budget_chunks SET balance = 0, is_active = 0, updated_at = ? WHERE id = ?",
+            (now(), chunk_id),
+        )
         return {"deleted": True}
 
 
@@ -1102,6 +1136,8 @@ def add_paycheck(payload: AddPaycheckIn, profile_id: int = 1) -> dict[str, Any]:
         net_amount = profile["net_pay_amount"] if payload.amount_mode == "expected" else payload.custom_amount
         if net_amount is None:
             raise HTTPException(status_code=400, detail="Custom amount is required")
+        if float(net_amount) <= 0:
+            raise HTTPException(status_code=400, detail="Paycheck amount must be greater than zero")
 
         stamp = now()
         cursor = conn.execute(
@@ -1115,7 +1151,12 @@ def add_paycheck(payload: AddPaycheckIn, profile_id: int = 1) -> dict[str, Any]:
         conn.execute("UPDATE accounts SET balance = balance + ?, updated_at = ? WHERE id = ?", (net_amount, stamp, account_id))
 
         chunks = conn.execute(
-            "SELECT * FROM budget_chunks WHERE profile_id = ? AND account_id = ? AND is_active = 1 ORDER BY id",
+            """
+            SELECT * FROM budget_chunks
+            WHERE profile_id = ? AND is_active = 1
+              AND (chunk_type = 'loan' OR account_id = ?)
+            ORDER BY id
+            """,
             (profile_id, account_id),
         ).fetchall()
         remaining = float(net_amount)
@@ -1124,7 +1165,6 @@ def add_paycheck(payload: AddPaycheckIn, profile_id: int = 1) -> dict[str, Any]:
             amount = min(float(chunk["amount_per_paycheck"]), remaining)
             if amount <= 0:
                 break
-            conn.execute("UPDATE budget_chunks SET balance = balance + ?, updated_at = ? WHERE id = ?", (amount, stamp, chunk["id"]))
             loan_balance_after = None
             if chunk["chunk_type"] == "loan":
                 loan_balance_after = updated_loan_balance(
@@ -1138,6 +1178,9 @@ def add_paycheck(payload: AddPaycheckIn, profile_id: int = 1) -> dict[str, Any]:
                         "UPDATE budget_chunks SET loan_balance = ?, updated_at = ? WHERE id = ?",
                         (loan_balance_after, stamp, chunk["id"]),
                     )
+                conn.execute("UPDATE accounts SET balance = balance - ?, updated_at = ? WHERE id = ?", (amount, stamp, account_id))
+            else:
+                conn.execute("UPDATE budget_chunks SET balance = balance + ?, updated_at = ? WHERE id = ?", (amount, stamp, chunk["id"]))
             conn.execute(
                 """
                 INSERT INTO paycheck_allocations (paycheck_id, chunk_id, amount, created_at)
@@ -1236,6 +1279,8 @@ def create_money_movement(payload: MoneyMovementIn, profile_id: int = 1) -> dict
             source_chunk = get_chunk_or_404(conn, payload.source_id)
             if source_chunk["profile_id"] != profile_id:
                 raise HTTPException(status_code=404, detail="Chunk not found")
+            if source_chunk["chunk_type"] == "loan":
+                raise HTTPException(status_code=400, detail="Loan chunks cannot be used as a transfer source")
             source_account_id = source_chunk["account_id"]
             if source_chunk["balance"] < payload.amount:
                 raise HTTPException(status_code=400, detail="Chunk does not have enough allocated money")
@@ -1263,24 +1308,39 @@ def create_money_movement(payload: MoneyMovementIn, profile_id: int = 1) -> dict
             destination_chunk = get_chunk_or_404(conn, payload.destination_id)
             if destination_chunk["profile_id"] != profile_id:
                 raise HTTPException(status_code=404, detail="Chunk not found")
-            destination_account_id = destination_chunk["account_id"]
-            if payload.source_type == "unallocated" and source_account_id != destination_account_id:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Unallocated money can only be assigned to chunks in the same account",
-                )
-            if payload.source_type == "chunk" and source_account_id != destination_account_id:
-                destination = account_summary(conn, destination_account_id, profile_id)
-                if not destination or destination["unallocated_balance"] < payload.amount:
+            if destination_chunk["chunk_type"] == "loan":
+                destination_balance_before = float(destination_chunk["loan_balance"] or 0)
+                payment = min(payload.amount, destination_balance_before) if destination_chunk["loan_balance"] is not None else payload.amount
+                if destination_chunk["loan_balance"] is not None:
+                    conn.execute(
+                        "UPDATE budget_chunks SET loan_balance = MAX(0, loan_balance - ?), updated_at = ? WHERE id = ?",
+                        (payment, stamp, payload.destination_id),
+                    )
+                if source_account_id is not None:
+                    conn.execute(
+                        "UPDATE accounts SET balance = balance - ?, updated_at = ? WHERE id = ?",
+                        (payload.amount, stamp, source_account_id),
+                    )
+                destination_id = payload.destination_id
+            else:
+                destination_account_id = destination_chunk["account_id"]
+                if payload.source_type == "unallocated" and source_account_id != destination_account_id:
                     raise HTTPException(
                         status_code=400,
-                        detail="Destination account needs enough unallocated money before a cross-account chunk transfer can be logged",
+                        detail="Unallocated money can only be assigned to chunks in the same account",
                     )
-            destination_balance_before = float(destination_chunk["balance"])
-            conn.execute(
-                "UPDATE budget_chunks SET balance = balance + ?, updated_at = ? WHERE id = ?",
-                (payload.amount, stamp, payload.destination_id),
-            )
+                if payload.source_type == "chunk" and source_account_id != destination_account_id:
+                    destination = account_summary(conn, destination_account_id, profile_id)
+                    if not destination or destination["unallocated_balance"] < payload.amount:
+                        raise HTTPException(
+                            status_code=400,
+                            detail="Destination account needs enough unallocated money before a cross-account chunk transfer can be logged",
+                        )
+                destination_balance_before = float(destination_chunk["balance"])
+                conn.execute(
+                    "UPDATE budget_chunks SET balance = balance + ?, updated_at = ? WHERE id = ?",
+                    (payload.amount, stamp, payload.destination_id),
+                )
         elif payload.destination_type == "account":
             if payload.destination_id is None:
                 raise HTTPException(status_code=400, detail="destination_id is required to log an account destination")
