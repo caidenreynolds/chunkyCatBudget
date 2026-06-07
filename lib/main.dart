@@ -393,6 +393,7 @@ class _LoginScreenState extends State<LoginScreen> {
   final email = TextEditingController();
   final password = TextEditingController();
   var signingIn = false;
+  var submitted = false;
 
   @override
   Widget build(BuildContext context) {
@@ -427,15 +428,23 @@ class _LoginScreenState extends State<LoginScreen> {
                         controller: email,
                         keyboardType: TextInputType.emailAddress,
                         autofillHints: const [AutofillHints.email],
-                        decoration: const InputDecoration(labelText: 'Email'),
+                        decoration: InputDecoration(
+                          labelText: 'Email',
+                          errorText: submitted && email.text.trim().isEmpty
+                              ? 'Required'
+                              : null,
+                        ),
                       ),
                       const SizedBox(height: 12),
                       TextField(
                         controller: password,
                         obscureText: true,
                         autofillHints: const [AutofillHints.password],
-                        decoration: const InputDecoration(
+                        decoration: InputDecoration(
                           labelText: 'Password',
+                          errorText: submitted && password.text.isEmpty
+                              ? 'Required'
+                              : null,
                         ),
                       ),
                       const SizedBox(height: 18),
@@ -473,6 +482,8 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   Future<void> _signIn() async {
+    setState(() => submitted = true);
+    if (email.text.trim().isEmpty || password.text.isEmpty) return;
     setState(() => signingIn = true);
     try {
       final user = Map<String, dynamic>.from(
@@ -518,6 +529,7 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
   final password = TextEditingController();
   final confirmPassword = TextEditingController();
   var creating = false;
+  var submitted = false;
 
   @override
   Widget build(BuildContext context) {
@@ -549,30 +561,45 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                       const SizedBox(height: 20),
                       TextField(
                         controller: displayName,
-                        decoration: const InputDecoration(
+                        decoration: InputDecoration(
                           labelText: 'Display name',
+                          errorText:
+                              submitted && displayName.text.trim().isEmpty
+                              ? 'Required'
+                              : null,
                         ),
                       ),
                       const SizedBox(height: 12),
                       TextField(
                         controller: email,
                         keyboardType: TextInputType.emailAddress,
-                        decoration: const InputDecoration(labelText: 'Email'),
+                        decoration: InputDecoration(
+                          labelText: 'Email',
+                          errorText: submitted && email.text.trim().isEmpty
+                              ? 'Required'
+                              : null,
+                        ),
                       ),
                       const SizedBox(height: 12),
                       TextField(
                         controller: password,
                         obscureText: true,
-                        decoration: const InputDecoration(
+                        decoration: InputDecoration(
                           labelText: 'Password',
+                          errorText: submitted && password.text.isEmpty
+                              ? 'Required'
+                              : null,
                         ),
                       ),
                       const SizedBox(height: 12),
                       TextField(
                         controller: confirmPassword,
                         obscureText: true,
-                        decoration: const InputDecoration(
+                        decoration: InputDecoration(
                           labelText: 'Confirm password',
+                          errorText: submitted && confirmPassword.text.isEmpty
+                              ? 'Required'
+                              : null,
                         ),
                       ),
                       const SizedBox(height: 18),
@@ -610,6 +637,13 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
   }
 
   Future<void> _create() async {
+    setState(() => submitted = true);
+    if (displayName.text.trim().isEmpty ||
+        email.text.trim().isEmpty ||
+        password.text.isEmpty ||
+        confirmPassword.text.isEmpty) {
+      return;
+    }
     if (password.text != confirmPassword.text) {
       toast(context, 'Passwords do not match');
       return;
@@ -1684,11 +1718,13 @@ class _PaycheckSetupScreenState extends State<PaycheckSetupScreen> {
   int? selectedPaycheckProfileId;
   int? defaultAccountId;
   var saving = false;
+  var submitted = false;
 
   @override
   void initState() {
     super.initState();
     net.addListener(() => setState(() {}));
+    profileName.addListener(() => setState(() {}));
     final profiles = listOfMaps(widget.data['paycheck_profiles']);
     if (profiles.isNotEmpty) _loadProfile(profiles.first);
   }
@@ -1720,6 +1756,7 @@ class _PaycheckSetupScreenState extends State<PaycheckSetupScreen> {
       defaultAccountId = accounts.isNotEmpty
           ? accounts.first['id'] as int
           : null;
+      submitted = false;
     });
   }
 
@@ -1751,9 +1788,20 @@ class _PaycheckSetupScreenState extends State<PaycheckSetupScreen> {
             ),
           TextField(
             controller: profileName,
-            decoration: const InputDecoration(labelText: 'Profile name'),
+            decoration: InputDecoration(
+              labelText: 'Profile name',
+              errorText: submitted && profileName.text.trim().isEmpty
+                  ? 'Required'
+                  : null,
+            ),
           ),
-          _MoneyField(label: 'Net paycheck amount', controller: net),
+          _MoneyField(
+            label: 'Net paycheck amount',
+            controller: net,
+            errorText: submitted && parseMoney(net.text) <= 0
+                ? 'Required'
+                : null,
+          ),
           _DropdownField(
             label: 'Net pay mode',
             value: mode,
@@ -1790,6 +1838,9 @@ class _PaycheckSetupScreenState extends State<PaycheckSetupScreen> {
                 .firstWhere((account) => account['id'] == id)['name']
                 .toString(),
             onChanged: (v) => setState(() => defaultAccountId = v),
+            errorText: submitted && defaultAccountId == null
+                ? 'Required'
+                : null,
           ),
           OutlinedButton.icon(
             onPressed: widget.canEdit ? _newProfile : null,
@@ -1807,9 +1858,7 @@ class _PaycheckSetupScreenState extends State<PaycheckSetupScreen> {
             label: selectedPaycheckProfileId == null
                 ? 'Create Profile'
                 : 'Save Profile',
-            onPressed: widget.canEdit && parseMoney(net.text) > 0
-                ? _save
-                : null,
+            onPressed: widget.canEdit ? _save : null,
           ),
         ],
       ),
@@ -1817,8 +1866,10 @@ class _PaycheckSetupScreenState extends State<PaycheckSetupScreen> {
   }
 
   Future<void> _save() async {
-    if (parseMoney(net.text) <= 0) {
-      toast(context, 'Net paycheck amount must be greater than zero.');
+    setState(() => submitted = true);
+    if (profileName.text.trim().isEmpty ||
+        parseMoney(net.text) <= 0 ||
+        defaultAccountId == null) {
       return;
     }
     setState(() => saving = true);
@@ -2172,6 +2223,7 @@ class _AccountCreateCardState extends State<_AccountCreateCard> {
   var type = 'checking';
   var sourceMode = 'manual';
   var saving = false;
+  var submitted = false;
 
   @override
   Widget build(BuildContext context) {
@@ -2188,7 +2240,12 @@ class _AccountCreateCardState extends State<_AccountCreateCard> {
             const SizedBox(height: 12),
             TextField(
               controller: name,
-              decoration: const InputDecoration(labelText: 'Account name'),
+              decoration: InputDecoration(
+                labelText: 'Account name',
+                errorText: submitted && name.text.trim().isEmpty
+                    ? 'Required'
+                    : null,
+              ),
             ),
             const SizedBox(height: 12),
             _DropdownField(
@@ -2221,6 +2278,8 @@ class _AccountCreateCardState extends State<_AccountCreateCard> {
   }
 
   Future<void> _save() async {
+    setState(() => submitted = true);
+    if (name.text.trim().isEmpty) return;
     setState(() => saving = true);
     try {
       await widget.api.post('/api/accounts', {
@@ -2414,6 +2473,19 @@ class _AddPaycheckScreenState extends State<AddPaycheckScreen> {
   int? accountId;
   final custom = TextEditingController();
   var saving = false;
+  var submitted = false;
+
+  @override
+  void initState() {
+    super.initState();
+    custom.addListener(() => setState(() {}));
+  }
+
+  @override
+  void dispose() {
+    custom.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -2460,6 +2532,9 @@ class _AddPaycheckScreenState extends State<AddPaycheckScreen> {
                     (accounts.isNotEmpty ? accounts.first['id'] as int : null);
               });
             },
+            errorText: submitted && paycheckProfileId == null
+                ? 'Required'
+                : null,
           ),
           if (profile != null)
             _BalanceHint(
@@ -2473,6 +2548,7 @@ class _AddPaycheckScreenState extends State<AddPaycheckScreen> {
             labelFor: (id) =>
                 accounts.firstWhere((a) => a['id'] == id)['name'].toString(),
             onChanged: (v) => setState(() => accountId = v),
+            errorText: submitted && accountId == null ? 'Required' : null,
           ),
           _DropdownField(
             label: 'Amount',
@@ -2483,13 +2559,17 @@ class _AddPaycheckScreenState extends State<AddPaycheckScreen> {
             onChanged: (v) => setState(() => mode = v ?? mode),
           ),
           if (mode == 'custom')
-            _MoneyField(label: 'Custom amount', controller: custom),
+            _MoneyField(
+              label: 'Custom amount',
+              controller: custom,
+              errorText: submitted && parseMoney(custom.text) <= 0
+                  ? 'Required'
+                  : null,
+            ),
           _SubmitButton(
             saving: saving,
             label: 'Add Paycheck',
-            onPressed: !widget.canEdit || profile == null || accountId == null
-                ? null
-                : _add,
+            onPressed: widget.canEdit ? _add : null,
           ),
         ],
       ),
@@ -2497,6 +2577,32 @@ class _AddPaycheckScreenState extends State<AddPaycheckScreen> {
   }
 
   Future<void> _add() async {
+    setState(() => submitted = true);
+    final profiles = listOfMaps(widget.data['paycheck_profiles']);
+    final profile = profiles.cast<Map<String, dynamic>?>().firstWhere(
+      (item) => item?['id'] == paycheckProfileId,
+      orElse: () => null,
+    );
+    final paycheckAmount = mode == 'custom'
+        ? parseMoney(custom.text)
+        : parseMoney('${profile?['net_pay_amount'] ?? 0}');
+    if (profile == null || accountId == null || paycheckAmount <= 0) return;
+
+    final eligibleChunks = listOfMaps(widget.data['chunks']).where((chunk) {
+      return chunk['is_active'] != false &&
+          (chunk['chunk_type']?.toString() == 'loan' ||
+              chunk['account_id'] == accountId);
+    }).toList();
+    final configuredTotal = eligibleChunks.fold<double>(
+      0,
+      (total, chunk) => total + _paycheckChunkMaximum(chunk),
+    );
+    List<Map<String, dynamic>>? allocations;
+    if (configuredTotal > paycheckAmount) {
+      allocations = await _reviewAllocations(eligibleChunks, paycheckAmount);
+      if (allocations == null) return;
+    }
+
     setState(() => saving = true);
     try {
       final result = await widget.api.post('/api/paychecks/add', {
@@ -2504,6 +2610,7 @@ class _AddPaycheckScreenState extends State<AddPaycheckScreen> {
         'amount_mode': mode,
         'custom_amount': mode == 'custom' ? parseMoney(custom.text) : null,
         'account_id': accountId,
+        'allocations': allocations,
       });
       widget.refresh();
       if (!mounted) return;
@@ -2517,6 +2624,130 @@ class _AddPaycheckScreenState extends State<AddPaycheckScreen> {
     } finally {
       if (mounted) setState(() => saving = false);
     }
+  }
+
+  double _paycheckChunkMaximum(Map<String, dynamic> chunk) {
+    final configured = parseMoney('${chunk['amount_per_paycheck'] ?? 0}');
+    if (chunk['chunk_type']?.toString() == 'loan' &&
+        chunk['loan_balance'] != null) {
+      return configured
+          .clamp(0, parseMoney('${chunk['loan_balance']}'))
+          .toDouble();
+    }
+    return configured;
+  }
+
+  Future<List<Map<String, dynamic>>?> _reviewAllocations(
+    List<Map<String, dynamic>> chunks,
+    double paycheckAmount,
+  ) async {
+    final selected = <int, bool>{};
+    final controllers = <int, TextEditingController>{};
+    for (final chunk in chunks) {
+      final id = chunk['id'] as int;
+      selected[id] = true;
+      controllers[id] = TextEditingController(
+        text: _paycheckChunkMaximum(chunk).toStringAsFixed(2),
+      );
+    }
+    final result = await showDialog<List<Map<String, dynamic>>>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          final total = chunks.fold<double>(0, (sum, chunk) {
+            final id = chunk['id'] as int;
+            return sum +
+                (selected[id] == true ? parseMoney(controllers[id]!.text) : 0);
+          });
+          return AlertDialog(
+            title: const Text('Review Paycheck Chunks'),
+            content: SizedBox(
+              width: 560,
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const _Notice(
+                      'This paycheck is less than the configured chunk total. Deselect chunks or lower one-time amounts before adding it.',
+                    ),
+                    const SizedBox(height: 12),
+                    for (final chunk in chunks)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 12),
+                        child: Row(
+                          children: [
+                            Checkbox(
+                              value: selected[chunk['id']] == true,
+                              onChanged: (value) => setDialogState(
+                                () => selected[chunk['id'] as int] =
+                                    value ?? false,
+                              ),
+                            ),
+                            Expanded(child: Text(chunk['name'].toString())),
+                            SizedBox(
+                              width: 150,
+                              child: _MoneyField(
+                                label: 'This paycheck',
+                                controller: controllers[chunk['id'] as int]!,
+                                onChanged: (_) => setDialogState(() {}),
+                                errorText:
+                                    parseMoney(
+                                          controllers[chunk['id'] as int]!.text,
+                                        ) >
+                                        _paycheckChunkMaximum(chunk)
+                                    ? 'Too high'
+                                    : null,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    _BalanceHint(
+                      text:
+                          'Selected ${money(total)} of ${money(paycheckAmount)} paycheck',
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Cancel Paycheck'),
+              ),
+              FilledButton(
+                onPressed:
+                    total <= paycheckAmount &&
+                        chunks.every(
+                          (chunk) =>
+                              selected[chunk['id']] != true ||
+                              parseMoney(
+                                    controllers[chunk['id'] as int]!.text,
+                                  ) <=
+                                  _paycheckChunkMaximum(chunk),
+                        )
+                    ? () => Navigator.pop(context, [
+                        for (final chunk in chunks)
+                          if (selected[chunk['id']] == true)
+                            {
+                              'chunk_id': chunk['id'],
+                              'amount': parseMoney(
+                                controllers[chunk['id'] as int]!.text,
+                              ),
+                            },
+                      ])
+                    : null,
+                child: const Text('Add Paycheck'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+    for (final controller in controllers.values) {
+      controller.dispose();
+    }
+    return result;
   }
 }
 
@@ -2546,6 +2777,7 @@ class _TransfersScreenState extends State<TransfersScreen> {
   final amount = TextEditingController();
   final note = TextEditingController();
   var saving = false;
+  var submitted = false;
 
   @override
   void initState() {
@@ -2585,18 +2817,9 @@ class _TransfersScreenState extends State<TransfersScreen> {
         : null;
 
     final isPhone = MediaQuery.sizeOf(context).width < 600;
-    final requiresDestination = destinationType != 'outside_account';
     final source = _selectedSource(accounts, sourceChunks);
     final destination = _selectedDestination(accounts, chunks);
-    final sourceAvailable = _sourceAvailable(source);
     final transferAmount = parseMoney(amount.text);
-    final canAddTransfer =
-        widget.canEdit &&
-        sourceId != null &&
-        (!requiresDestination || destinationId != null) &&
-        transferAmount > 0 &&
-        transferAmount <= sourceAvailable &&
-        !saving;
 
     final formFields = [
       _DropdownField(
@@ -2624,6 +2847,7 @@ class _TransfersScreenState extends State<TransfersScreen> {
           accounts: manualAccounts,
           chunks: chunks,
           onChanged: (v) => setState(() => sourceId = v),
+          errorText: submitted && sourceId == null ? 'Required' : null,
         ),
         if (source != null) _BalanceHint(text: _accountBalanceSummary(source)),
         _EntityDropdown(
@@ -2633,6 +2857,7 @@ class _TransfersScreenState extends State<TransfersScreen> {
           accounts: manualAccounts,
           chunks: chunks,
           onChanged: (v) => setState(() => destinationId = v),
+          errorText: submitted && destinationId == null ? 'Required' : null,
         ),
         if (destination != null)
           _BalanceHint(text: _accountBalanceSummary(destination)),
@@ -2653,6 +2878,7 @@ class _TransfersScreenState extends State<TransfersScreen> {
           accounts: accounts,
           chunks: sourceChunks,
           onChanged: (v) => setState(() => sourceId = v),
+          errorText: submitted && sourceId == null ? 'Required' : null,
         ),
         if (source != null) _BalanceHint(text: _sourceBalanceSummary(source)),
         _DropdownField(
@@ -2673,11 +2899,16 @@ class _TransfersScreenState extends State<TransfersScreen> {
             accounts: accounts,
             chunks: chunks,
             onChanged: (v) => setState(() => destinationId = v),
+            errorText: submitted && destinationId == null ? 'Required' : null,
           ),
         if (destination != null)
           _BalanceHint(text: _destinationBalanceSummary(destination)),
       ],
-      _MoneyField(label: 'Amount', controller: amount),
+      _MoneyField(
+        label: 'Amount',
+        controller: amount,
+        errorText: submitted && transferAmount <= 0 ? 'Required' : null,
+      ),
       TextField(
         controller: note,
         decoration: const InputDecoration(labelText: 'Note'),
@@ -2685,7 +2916,7 @@ class _TransfersScreenState extends State<TransfersScreen> {
       _SubmitButton(
         saving: saving,
         label: 'Add Transfer',
-        onPressed: canAddTransfer ? _save : null,
+        onPressed: widget.canEdit && !saving ? _save : null,
       ),
     ];
 
@@ -2719,7 +2950,7 @@ class _TransfersScreenState extends State<TransfersScreen> {
       title: 'Transfers',
       actions: [
         FilledButton.icon(
-          onPressed: canAddTransfer ? _save : null,
+          onPressed: widget.canEdit && !saving ? _save : null,
           icon: saving
               ? const SizedBox.square(
                   dimension: 18,
@@ -2774,18 +3005,34 @@ class _TransfersScreenState extends State<TransfersScreen> {
   }
 
   Future<void> _save() async {
+    setState(() => submitted = true);
+    if (sourceId == null ||
+        (destinationType != 'outside_account' && destinationId == null)) {
+      return;
+    }
     final sourceAvailable = _sourceAvailable(
       _selectedSource(
         listOfMaps(widget.data['accounts']),
         listOfMaps(widget.data['chunks']),
       ),
     );
-    final transferAmount = parseMoney(amount.text);
-    if (transferAmount <= 0) {
+    final requestedAmount = parseMoney(amount.text);
+    if (requestedAmount <= 0) {
       toast(context, 'Enter a transfer amount greater than zero.');
       return;
     }
-    if (transferAmount > sourceAvailable) {
+    final destination = _selectedDestination(
+      listOfMaps(widget.data['accounts']),
+      listOfMaps(widget.data['chunks']),
+    );
+    final effectiveAmount =
+        destination?['chunk_type']?.toString() == 'loan' &&
+            destination?['loan_balance'] != null
+        ? requestedAmount
+              .clamp(0, parseMoney('${destination?['loan_balance']}'))
+              .toDouble()
+        : requestedAmount;
+    if (effectiveAmount > sourceAvailable) {
       toast(
         context,
         'Transfer amount is greater than the source amount available.',
@@ -2794,7 +3041,7 @@ class _TransfersScreenState extends State<TransfersScreen> {
     }
     setState(() => saving = true);
     try {
-      await widget.api.post('/api/money-movements', {
+      final movement = await widget.api.post('/api/money-movements', {
         'movement_type': movementType,
         'source_type': sourceType,
         'source_id': sourceId,
@@ -2802,7 +3049,7 @@ class _TransfersScreenState extends State<TransfersScreen> {
         'destination_id': destinationType == 'outside_account'
             ? null
             : destinationId,
-        'amount': parseMoney(amount.text),
+        'amount': requestedAmount,
         'note': note.text,
       });
       amount.clear();
@@ -2811,7 +3058,12 @@ class _TransfersScreenState extends State<TransfersScreen> {
       destinationId = null;
       widget.refresh();
       if (!mounted) return;
-      toast(context, 'Movement logged');
+      toast(
+        context,
+        effectiveAmount != requestedAmount
+            ? 'Movement adjusted to remaining loan balance: ${money(movement['amount'])}'
+            : 'Movement logged',
+      );
     } catch (error) {
       if (!mounted) return;
       toast(context, error.toString());
@@ -2898,6 +3150,7 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
   final amount = TextEditingController();
   final description = TextEditingController();
   var saving = false;
+  var submitted = false;
 
   Future<List<Map<String, dynamic>>> _load() async =>
       listOfMaps(await widget.api.get('/api/transactions'));
@@ -2927,8 +3180,15 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
                     .firstWhere((a) => a['id'] == id)['name']
                     .toString(),
                 onChanged: (v) => setState(() => accountId = v),
+                errorText: submitted && accountId == null ? 'Required' : null,
               ),
-              _MoneyField(label: 'Amount', controller: amount),
+              _MoneyField(
+                label: 'Amount',
+                controller: amount,
+                errorText: submitted && amount.text.trim().isEmpty
+                    ? 'Required'
+                    : null,
+              ),
               TextField(
                 controller: description,
                 decoration: const InputDecoration(labelText: 'Description'),
@@ -2943,7 +3203,7 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
               _SubmitButton(
                 saving: saving,
                 label: 'Add Transaction',
-                onPressed: !widget.canEdit || accountId == null ? null : _save,
+                onPressed: widget.canEdit ? _save : null,
               ),
             ],
           ),
@@ -2975,6 +3235,8 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
   }
 
   Future<void> _save() async {
+    setState(() => submitted = true);
+    if (accountId == null || amount.text.trim().isEmpty) return;
     setState(() => saving = true);
     try {
       await widget.api.post('/api/transactions', {
@@ -3312,6 +3574,7 @@ class _EntityDropdown extends StatelessWidget {
     required this.accounts,
     required this.chunks,
     required this.onChanged,
+    this.errorText,
   });
   final String label;
   final String type;
@@ -3319,6 +3582,7 @@ class _EntityDropdown extends StatelessWidget {
   final List<Map<String, dynamic>> accounts;
   final List<Map<String, dynamic>> chunks;
   final ValueChanged<int?> onChanged;
+  final String? errorText;
 
   @override
   Widget build(BuildContext context) {
@@ -3330,6 +3594,7 @@ class _EntityDropdown extends StatelessWidget {
       labelFor: (value) =>
           values.firstWhere((v) => v['id'] == value)['name'].toString(),
       onChanged: onChanged,
+      errorText: errorText,
     );
   }
 }
@@ -3634,9 +3899,16 @@ class _DetailLine extends StatelessWidget {
 }
 
 class _MoneyField extends StatelessWidget {
-  const _MoneyField({required this.label, required this.controller});
+  const _MoneyField({
+    required this.label,
+    required this.controller,
+    this.errorText,
+    this.onChanged,
+  });
   final String label;
   final TextEditingController controller;
+  final String? errorText;
+  final ValueChanged<String>? onChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -3644,7 +3916,12 @@ class _MoneyField extends StatelessWidget {
       controller: controller,
       keyboardType: const TextInputType.numberWithOptions(decimal: true),
       inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'[0-9.]'))],
-      decoration: InputDecoration(labelText: label, prefixText: r'$ '),
+      onChanged: onChanged,
+      decoration: InputDecoration(
+        labelText: label,
+        prefixText: r'$ ',
+        errorText: errorText,
+      ),
     );
   }
 }
@@ -3656,18 +3933,20 @@ class _DropdownField<T> extends StatelessWidget {
     required this.values,
     required this.onChanged,
     this.labelFor,
+    this.errorText,
   });
   final String label;
   final T? value;
   final List<T> values;
   final ValueChanged<T?> onChanged;
   final String Function(T value)? labelFor;
+  final String? errorText;
 
   @override
   Widget build(BuildContext context) {
     return DropdownButtonFormField<T>(
       initialValue: values.contains(value) ? value : null,
-      decoration: InputDecoration(labelText: label),
+      decoration: InputDecoration(labelText: label, errorText: errorText),
       items: values
           .map(
             (v) => DropdownMenuItem(
@@ -3865,6 +4144,7 @@ Future<void> showChunkDialog(
   var accountId = chunk?['account_id'] as int? ?? accounts.first['id'] as int;
   var chunkType = chunk?['chunk_type']?.toString() ?? 'standard';
   final isEditing = chunk != null;
+  var submitted = false;
   await showDialog<void>(
     context: context,
     builder: (context) => StatefulBuilder(
@@ -3876,7 +4156,12 @@ Future<void> showChunkDialog(
             children: [
               TextField(
                 controller: name,
-                decoration: const InputDecoration(labelText: 'Name'),
+                decoration: InputDecoration(
+                  labelText: 'Name',
+                  errorText: submitted && name.text.trim().isEmpty
+                      ? 'Required'
+                      : null,
+                ),
               ),
               const SizedBox(height: 12),
               _DropdownField(
@@ -3899,7 +4184,13 @@ Future<void> showChunkDialog(
                 ),
               ],
               const SizedBox(height: 12),
-              _MoneyField(label: 'Amount per paycheck', controller: amount),
+              _MoneyField(
+                label: 'Amount per paycheck',
+                controller: amount,
+                errorText: submitted && amount.text.trim().isEmpty
+                    ? 'Required'
+                    : null,
+              ),
               if (chunkType == 'loan') ...[
                 const SizedBox(height: 12),
                 _MoneyField(
@@ -3935,6 +4226,10 @@ Future<void> showChunkDialog(
           ),
           FilledButton(
             onPressed: () async {
+              setState(() => submitted = true);
+              if (name.text.trim().isEmpty || amount.text.trim().isEmpty) {
+                return;
+              }
               final payload = {
                 'name': name.text,
                 'account_id': chunkType == 'loan' ? null : accountId,

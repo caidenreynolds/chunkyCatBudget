@@ -141,6 +141,12 @@ class AddPaycheckIn(BaseModel):
     amount_mode: Literal["expected", "custom"] = "expected"
     custom_amount: float | None = Field(default=None, ge=0)
     account_id: int | None = None
+    allocations: list["PaycheckAllocationIn"] | None = None
+
+
+class PaycheckAllocationIn(BaseModel):
+    chunk_id: int
+    amount: float = Field(ge=0)
 
 
 class MoneyMovementIn(BaseModel):
@@ -1159,12 +1165,39 @@ def add_paycheck(payload: AddPaycheckIn, profile_id: int = 1) -> dict[str, Any]:
             """,
             (profile_id, account_id),
         ).fetchall()
+        chunk_by_id = {chunk["id"]: chunk for chunk in chunks}
+        requested_allocations = None
+        if payload.allocations is not None:
+            requested_allocations = []
+            requested_total = 0.0
+            for allocation in payload.allocations:
+                chunk = chunk_by_id.get(allocation.chunk_id)
+                if not chunk:
+                    raise HTTPException(status_code=400, detail="Selected chunk is not available for this paycheck")
+                configured_amount = float(chunk["amount_per_paycheck"])
+                amount = float(allocation.amount)
+                if amount > configured_amount:
+                    raise HTTPException(status_code=400, detail=f"{chunk['name']} cannot exceed its configured paycheck amount")
+                if chunk["chunk_type"] == "loan" and chunk["loan_balance"] is not None:
+                    amount = min(amount, float(chunk["loan_balance"]))
+                requested_total += amount
+                requested_allocations.append((chunk, amount))
+            if requested_total > float(net_amount):
+                raise HTTPException(status_code=400, detail="Selected chunk allocations exceed the paycheck amount")
+
         remaining = float(net_amount)
         allocations = []
-        for chunk in chunks:
-            amount = min(float(chunk["amount_per_paycheck"]), remaining)
+        allocation_rows = (
+            requested_allocations
+            if requested_allocations is not None
+            else [(chunk, min(float(chunk["amount_per_paycheck"]), remaining)) for chunk in chunks]
+        )
+        for chunk, requested_amount in allocation_rows:
+            amount = min(float(requested_amount), remaining)
+            if chunk["chunk_type"] == "loan" and chunk["loan_balance"] is not None:
+                amount = min(amount, float(chunk["loan_balance"]))
             if amount <= 0:
-                break
+                continue
             loan_balance_after = None
             if chunk["chunk_type"] == "loan":
                 loan_balance_after = updated_loan_balance(
@@ -1211,6 +1244,12 @@ def create_money_movement(payload: MoneyMovementIn, profile_id: int = 1) -> dict
         stamp = now()
         source_account_id: int | None = None
         destination_id = payload.destination_id
+        if payload.destination_type == "chunk" and payload.destination_id is not None:
+            possible_loan = get_chunk_or_404(conn, payload.destination_id)
+            if possible_loan["profile_id"] != profile_id:
+                raise HTTPException(status_code=404, detail="Chunk not found")
+            if possible_loan["chunk_type"] == "loan" and possible_loan["loan_balance"] is not None:
+                payload.amount = min(payload.amount, float(possible_loan["loan_balance"]))
 
         if payload.movement_type == "manual_account_transfer":
             if payload.source_type != "unallocated" or payload.destination_type != "unallocated":
@@ -1310,7 +1349,7 @@ def create_money_movement(payload: MoneyMovementIn, profile_id: int = 1) -> dict
                 raise HTTPException(status_code=404, detail="Chunk not found")
             if destination_chunk["chunk_type"] == "loan":
                 destination_balance_before = float(destination_chunk["loan_balance"] or 0)
-                payment = min(payload.amount, destination_balance_before) if destination_chunk["loan_balance"] is not None else payload.amount
+                payment = payload.amount
                 if destination_chunk["loan_balance"] is not None:
                     conn.execute(
                         "UPDATE budget_chunks SET loan_balance = MAX(0, loan_balance - ?), updated_at = ? WHERE id = ?",

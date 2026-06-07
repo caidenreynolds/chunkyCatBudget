@@ -134,6 +134,7 @@ Frontend:
 - Gross pay is intentionally hidden from the UI; the backend keeps the old database column for compatibility and stores gross as net for new/updated profiles.
 - Net pay mode is currently a confidence/planning label: manual exact amount, expected recurring amount, or estimated placeholder.
 - Net paycheck amount must be greater than zero.
+- Required fields show an inline red `Required` error after an attempted save.
 - Existing paycheck profiles can be renamed, edited, or deleted. Deleting a profile keeps historical paycheck records.
 
 Backend:
@@ -158,6 +159,8 @@ Frontend:
 - It defaults the deposit account from the selected paycheck profile.
 - It shows the expected deposit amount before submit.
 - It can use expected net pay or a custom amount.
+- Required fields show an inline red `Required` error after an attempted add.
+- If the configured chunk total exceeds the paycheck, a review dialog lets the user cancel, deselect chunks, or enter smaller one-time allocation amounts before adding it.
 
 Backend:
 
@@ -169,6 +172,8 @@ Behavior:
 
 - Adds net pay to the selected/default deposit account.
 - Allocates paycheck money into active chunks for that same account, in chunk order.
+- Custom reviewed allocations cannot exceed each chunk's configured amount or the paycheck total.
+- Loan allocations are capped at the remaining loan balance.
 - Remaining money becomes unallocated in that account.
 
 ## Accounts
@@ -254,6 +259,7 @@ Important rules:
 - Chunk-to-unallocated returns money to the chunk's account.
 - Chunk-to-chunk across accounts requires the destination account to already have enough unallocated balance.
 - Transfer amount cannot exceed the source available amount.
+- Transfers to a loan chunk are automatically capped at its remaining loan balance, including zero.
 - Backend enforces balance rules even if frontend validation misses something.
 
 ## Transactions
@@ -303,7 +309,7 @@ Shared widgets:
 - `_BalanceHint` renders gray balance context under transfer selectors.
 - `_DetailLine` renders label/value lines in dialogs.
 - `_MoneyField` is the shared money input and restricts input to `[0-9.]`.
-- `_DropdownField` is the shared dropdown form field.
+- `_MoneyField`, `_DropdownField`, and `_EntityDropdown` support inline validation error text.
 - `_SubmitButton` is the shared saving-aware submit button.
 - `_ErrorView` renders retryable load errors.
 
