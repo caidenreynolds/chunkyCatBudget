@@ -269,14 +269,21 @@ def init_db() -> None:
                 gross_amount REAL NOT NULL,
                 net_amount REAL NOT NULL,
                 amount_mode TEXT NOT NULL,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                reverted_at TEXT
             );
 
             CREATE TABLE IF NOT EXISTS paycheck_allocations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 paycheck_id INTEGER NOT NULL REFERENCES paychecks(id),
                 chunk_id INTEGER NOT NULL REFERENCES budget_chunks(id),
+                account_id INTEGER REFERENCES accounts(id),
+                chunk_name TEXT,
                 amount REAL NOT NULL,
+                balance_before REAL,
+                balance_after REAL,
+                loan_balance_before REAL,
+                loan_balance_after REAL,
                 created_at TEXT NOT NULL
             );
 
@@ -364,6 +371,18 @@ def migrate_db(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE paycheck_profiles ADD COLUMN default_account_id INTEGER REFERENCES accounts(id)")
     if not column_exists(conn, "paychecks", "paycheck_profile_id"):
         conn.execute("ALTER TABLE paychecks ADD COLUMN paycheck_profile_id INTEGER REFERENCES paycheck_profiles(id)")
+    if not column_exists(conn, "paychecks", "reverted_at"):
+        conn.execute("ALTER TABLE paychecks ADD COLUMN reverted_at TEXT")
+    for column, definition in [
+        ("account_id", "INTEGER REFERENCES accounts(id)"),
+        ("chunk_name", "TEXT"),
+        ("balance_before", "REAL"),
+        ("balance_after", "REAL"),
+        ("loan_balance_before", "REAL"),
+        ("loan_balance_after", "REAL"),
+    ]:
+        if not column_exists(conn, "paycheck_allocations", column):
+            conn.execute(f"ALTER TABLE paycheck_allocations ADD COLUMN {column} {definition}")
 
     existing_user = conn.execute("SELECT * FROM users ORDER BY id LIMIT 1").fetchone()
     if existing_user is None:
@@ -509,6 +528,56 @@ def updated_loan_balance(current_balance: Any, annual_rate: Any, payment: float,
     rate = float(annual_rate or 0) / 100
     periodic_rate = rate / payments_per_year(pay_frequency)
     return max(0, balance * (1 + periodic_rate) - payment)
+
+
+def paycheck_records(conn: sqlite3.Connection, profile_id: int, limit: int | None = None) -> list[dict[str, Any]]:
+    limit_sql = " LIMIT ?" if limit is not None else ""
+    params: tuple[Any, ...] = (profile_id, limit) if limit is not None else (profile_id,)
+    paychecks = rows_to_dicts(
+        conn.execute(
+            f"""
+            SELECT p.*, pp.name AS paycheck_profile_name, a.name AS account_name
+            FROM paychecks p
+            LEFT JOIN paycheck_profiles pp ON pp.id = p.paycheck_profile_id
+            JOIN accounts a ON a.id = p.account_id
+            WHERE p.profile_id = ?
+            ORDER BY p.created_at DESC{limit_sql}
+            """,
+            params,
+        ).fetchall()
+    )
+    for paycheck in paychecks:
+        paycheck["allocations"] = rows_to_dicts(
+            conn.execute(
+                """
+                SELECT
+                    pa.id,
+                    pa.paycheck_id,
+                    pa.chunk_id,
+                    pa.account_id,
+                    COALESCE(pa.chunk_name, c.name, 'Deleted chunk') AS chunk_name,
+                    pa.amount,
+                    pa.balance_before,
+                    pa.balance_after,
+                    pa.loan_balance_before,
+                    pa.loan_balance_after,
+                    pa.created_at,
+                    COALESCE(a.name, current_account.name) AS account_name,
+                    c.chunk_type
+                FROM paycheck_allocations pa
+                LEFT JOIN budget_chunks c ON c.id = pa.chunk_id
+                LEFT JOIN accounts a ON a.id = pa.account_id
+                LEFT JOIN accounts current_account ON current_account.id = c.account_id
+                WHERE pa.paycheck_id = ?
+                ORDER BY pa.id
+                """,
+                (paycheck["id"],),
+            ).fetchall()
+        )
+        paycheck["allocated_amount"] = sum(float(allocation["amount"]) for allocation in paycheck["allocations"])
+        paycheck["unallocated_amount"] = float(paycheck["net_amount"]) - paycheck["allocated_amount"]
+        paycheck["is_reverted"] = paycheck["reverted_at"] is not None
+    return paychecks
 
 
 def movement_endpoint_balance(conn: sqlite3.Connection, endpoint_type: str, endpoint_id: int | None, profile_id: int) -> float | None:
@@ -796,9 +865,7 @@ def dashboard_summary(profile_id: int = 1) -> dict[str, Any]:
                 "SELECT * FROM money_movements WHERE profile_id = ? ORDER BY created_at DESC LIMIT 8", (profile_id,)
             ).fetchall()
         )
-        paychecks = rows_to_dicts(
-            conn.execute("SELECT * FROM paychecks WHERE profile_id = ? ORDER BY created_at DESC LIMIT 5", (profile_id,)).fetchall()
-        )
+        paychecks = paycheck_records(conn, profile_id)
         paycheck_profiles = rows_to_dicts(
             conn.execute("SELECT * FROM paycheck_profiles WHERE profile_id = ? ORDER BY id", (profile_id,)).fetchall()
         )
@@ -1063,7 +1130,9 @@ def create_chunk(payload: ChunkIn, profile_id: int = 1) -> dict[str, Any]:
 def update_chunk(chunk_id: int, payload: ChunkIn, profile_id: int = 1) -> dict[str, Any]:
     with db() as conn:
         chunk = get_chunk_or_404(conn, chunk_id)
-        account_id = chunk["account_id"] if payload.chunk_type == "loan" else payload.account_id
+        if payload.chunk_type != chunk["chunk_type"]:
+            raise HTTPException(status_code=400, detail="Chunk type cannot be changed after creation")
+        account_id = chunk["account_id"] if chunk["chunk_type"] == "loan" else payload.account_id
         if account_id is None:
             raise HTTPException(status_code=400, detail="Chunk account is required")
         account = get_account_or_404(conn, account_id)
@@ -1079,11 +1148,11 @@ def update_chunk(chunk_id: int, payload: ChunkIn, profile_id: int = 1) -> dict[s
             (
                 payload.name,
                 account_id,
-                payload.chunk_type,
+                chunk["chunk_type"],
                 payload.amount_per_paycheck,
                 payload.balance,
-                payload.loan_balance if payload.chunk_type == "loan" else None,
-                payload.loan_interest_rate if payload.chunk_type == "loan" else None,
+                payload.loan_balance if chunk["chunk_type"] == "loan" else None,
+                payload.loan_interest_rate if chunk["chunk_type"] == "loan" else None,
                 int(payload.is_active),
                 now(),
                 chunk_id,
@@ -1128,7 +1197,7 @@ def add_paycheck(payload: AddPaycheckIn, profile_id: int = 1) -> dict[str, Any]:
             profile = conn.execute("SELECT * FROM paycheck_profiles WHERE profile_id = ? ORDER BY id LIMIT 1", (profile_id,)).fetchone()
         if not profile:
             raise HTTPException(status_code=400, detail="Create a paycheck profile first")
-        account_id = payload.account_id or profile["default_account_id"]
+        account_id = profile["default_account_id"] or payload.account_id
         if account_id is None:
             account = conn.execute(
                 "SELECT * FROM accounts WHERE profile_id = ? AND is_active = 1 ORDER BY id LIMIT 1", (profile_id,)
@@ -1139,6 +1208,8 @@ def add_paycheck(payload: AddPaycheckIn, profile_id: int = 1) -> dict[str, Any]:
         account = get_account_or_404(conn, account_id)
         if account["profile_id"] != profile_id:
             raise HTTPException(status_code=404, detail="Account not found")
+        if not account["is_active"]:
+            raise HTTPException(status_code=400, detail="Paycheck default account must be active")
         net_amount = profile["net_pay_amount"] if payload.amount_mode == "expected" else payload.custom_amount
         if net_amount is None:
             raise HTTPException(status_code=400, detail="Custom amount is required")
@@ -1160,10 +1231,9 @@ def add_paycheck(payload: AddPaycheckIn, profile_id: int = 1) -> dict[str, Any]:
             """
             SELECT * FROM budget_chunks
             WHERE profile_id = ? AND is_active = 1
-              AND (chunk_type = 'loan' OR account_id = ?)
             ORDER BY id
             """,
-            (profile_id, account_id),
+            (profile_id,),
         ).fetchall()
         chunk_by_id = {chunk["id"]: chunk for chunk in chunks}
         requested_allocations = None
@@ -1198,6 +1268,9 @@ def add_paycheck(payload: AddPaycheckIn, profile_id: int = 1) -> dict[str, Any]:
                 amount = min(amount, float(chunk["loan_balance"]))
             if amount <= 0:
                 continue
+            balance_before = float(chunk["balance"]) if chunk["chunk_type"] != "loan" else None
+            balance_after = balance_before + amount if balance_before is not None else None
+            loan_balance_before = float(chunk["loan_balance"]) if chunk["loan_balance"] is not None else None
             loan_balance_after = None
             if chunk["chunk_type"] == "loan":
                 loan_balance_after = updated_loan_balance(
@@ -1213,18 +1286,48 @@ def add_paycheck(payload: AddPaycheckIn, profile_id: int = 1) -> dict[str, Any]:
                     )
                 conn.execute("UPDATE accounts SET balance = balance - ?, updated_at = ? WHERE id = ?", (amount, stamp, account_id))
             else:
+                if chunk["account_id"] != account_id:
+                    conn.execute(
+                        "UPDATE accounts SET balance = balance - ?, updated_at = ? WHERE id = ?",
+                        (amount, stamp, account_id),
+                    )
+                    conn.execute(
+                        "UPDATE accounts SET balance = balance + ?, updated_at = ? WHERE id = ?",
+                        (amount, stamp, chunk["account_id"]),
+                    )
                 conn.execute("UPDATE budget_chunks SET balance = balance + ?, updated_at = ? WHERE id = ?", (amount, stamp, chunk["id"]))
             conn.execute(
                 """
-                INSERT INTO paycheck_allocations (paycheck_id, chunk_id, amount, created_at)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO paycheck_allocations
+                    (paycheck_id, chunk_id, account_id, chunk_name, amount, balance_before, balance_after,
+                     loan_balance_before, loan_balance_after, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (paycheck_id, chunk["id"], amount, stamp),
+                (
+                    paycheck_id,
+                    chunk["id"],
+                    chunk["account_id"] if chunk["chunk_type"] != "loan" else None,
+                    chunk["name"],
+                    amount,
+                    balance_before,
+                    balance_after,
+                    loan_balance_before,
+                    loan_balance_after,
+                    stamp,
+                ),
             )
-            allocations.append({"chunk_id": chunk["id"], "chunk_name": chunk["name"], "amount": amount, "loan_balance_after": loan_balance_after})
+            allocations.append(
+                {
+                    "chunk_id": chunk["id"],
+                    "chunk_name": chunk["name"],
+                    "account_id": chunk["account_id"] if chunk["chunk_type"] != "loan" else None,
+                    "amount": amount,
+                    "loan_balance_after": loan_balance_after,
+                }
+            )
             remaining -= amount
 
-        paycheck = row_to_dict(conn.execute("SELECT * FROM paychecks WHERE id = ?", (paycheck_id,)).fetchone())
+        paycheck = next(record for record in paycheck_records(conn, profile_id) if record["id"] == paycheck_id)
         return {"paycheck": paycheck, "allocations": allocations, "unallocated_amount": remaining}
 
 
@@ -1232,9 +1335,84 @@ def add_paycheck(payload: AddPaycheckIn, profile_id: int = 1) -> dict[str, Any]:
 def list_paychecks(profile_id: int = 1) -> list[dict[str, Any]]:
     with db() as conn:
         get_profile_or_404(conn, profile_id)
-        return rows_to_dicts(
-            conn.execute("SELECT * FROM paychecks WHERE profile_id = ? ORDER BY created_at DESC", (profile_id,)).fetchall()
+        return paycheck_records(conn, profile_id)
+
+
+@app.post("/api/paychecks/{paycheck_id}/revert")
+def revert_paycheck(paycheck_id: int, profile_id: int = 1) -> dict[str, Any]:
+    with db() as conn:
+        paycheck = conn.execute(
+            "SELECT * FROM paychecks WHERE id = ? AND profile_id = ?",
+            (paycheck_id, profile_id),
+        ).fetchone()
+        if not paycheck:
+            raise HTTPException(status_code=404, detail="Paycheck not found")
+        if paycheck["reverted_at"] is not None:
+            raise HTTPException(status_code=400, detail="Paycheck has already been reverted")
+        allocations = conn.execute(
+            "SELECT * FROM paycheck_allocations WHERE paycheck_id = ? ORDER BY id",
+            (paycheck_id,),
+        ).fetchall()
+        if any(allocation["chunk_name"] is None for allocation in allocations):
+            raise HTTPException(status_code=400, detail="This paycheck predates revert support and cannot be safely reverted")
+
+        for allocation in allocations:
+            chunk = get_chunk_or_404(conn, allocation["chunk_id"])
+            if chunk["profile_id"] != profile_id:
+                raise HTTPException(status_code=400, detail="A paycheck chunk is no longer available")
+            amount = float(allocation["amount"])
+            if chunk["chunk_type"] == "loan":
+                if (allocation["loan_balance_before"] is None) != (allocation["loan_balance_after"] is None):
+                    raise HTTPException(status_code=400, detail=f"{allocation['chunk_name']} cannot be safely reverted")
+                if allocation["loan_balance_after"] is not None and abs(
+                    float(chunk["loan_balance"] or 0) - float(allocation["loan_balance_after"])
+                ) > 0.005:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"{allocation['chunk_name']} changed after this paycheck and must be restored manually",
+                    )
+            elif float(chunk["balance"]) + 0.005 < amount:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{allocation['chunk_name']} no longer has enough allocated balance to revert this paycheck",
+                )
+
+        stamp = now()
+        source_account_id = paycheck["account_id"]
+        conn.execute(
+            "UPDATE accounts SET balance = balance - ?, updated_at = ? WHERE id = ?",
+            (paycheck["net_amount"], stamp, source_account_id),
         )
+        for allocation in allocations:
+            chunk = get_chunk_or_404(conn, allocation["chunk_id"])
+            amount = float(allocation["amount"])
+            if chunk["chunk_type"] == "loan":
+                if allocation["loan_balance_before"] is not None:
+                    conn.execute(
+                        "UPDATE budget_chunks SET loan_balance = ?, updated_at = ? WHERE id = ?",
+                        (allocation["loan_balance_before"], stamp, chunk["id"]),
+                    )
+                conn.execute(
+                    "UPDATE accounts SET balance = balance + ?, updated_at = ? WHERE id = ?",
+                    (amount, stamp, source_account_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE budget_chunks SET balance = balance - ?, updated_at = ? WHERE id = ?",
+                    (amount, stamp, chunk["id"]),
+                )
+                allocation_account_id = allocation["account_id"]
+                if allocation_account_id != source_account_id:
+                    conn.execute(
+                        "UPDATE accounts SET balance = balance + ?, updated_at = ? WHERE id = ?",
+                        (amount, stamp, source_account_id),
+                    )
+                    conn.execute(
+                        "UPDATE accounts SET balance = balance - ?, updated_at = ? WHERE id = ?",
+                        (amount, stamp, allocation_account_id),
+                    )
+        conn.execute("UPDATE paychecks SET reverted_at = ? WHERE id = ?", (stamp, paycheck_id))
+        return next(record for record in paycheck_records(conn, profile_id) if record["id"] == paycheck_id)
 
 
 @app.post("/api/money-movements")

@@ -1313,6 +1313,7 @@ class _ScreenHost extends StatelessWidget {
     return switch (selected) {
       0 => DashboardScreen(
         data: data,
+        api: api,
         refresh: refresh,
         goTo: goTo,
         canEdit: canEdit,
@@ -1368,11 +1369,13 @@ class DashboardScreen extends StatelessWidget {
   const DashboardScreen({
     super.key,
     required this.data,
+    required this.api,
     required this.refresh,
     required this.goTo,
     required this.canEdit,
   });
   final Map<String, dynamic> data;
+  final BudgetApi api;
   final VoidCallback refresh;
   final ValueChanged<int> goTo;
   final bool canEdit;
@@ -1392,6 +1395,7 @@ class DashboardScreen extends StatelessWidget {
         (e) => Map<String, dynamic>.from(e),
       ),
     );
+    final paychecks = listOfMaps(data['recent_paychecks']);
 
     return _Page(
       title: 'Dashboard',
@@ -1450,6 +1454,28 @@ class DashboardScreen extends StatelessWidget {
                 subtitle:
                     '${c['account_name']}  |  ${money(c['amount_per_paycheck'])} per paycheck',
                 trailing: money(c['balance']),
+              );
+            }).toList(),
+          ),
+          const SizedBox(height: 20),
+          _SectionTitle('Paychecks'),
+          _DataCard(
+            emptyText: 'No paychecks added',
+            children: paychecks.map((paycheck) {
+              return _ListRow(
+                title:
+                    paycheck['paycheck_profile_name']?.toString() ?? 'Paycheck',
+                subtitle: paycheck['is_reverted'] == true
+                    ? 'Reverted ${formatDateTime(paycheck['reverted_at'])}'
+                    : formatDateTime(paycheck['created_at']),
+                trailing: money(paycheck['net_amount']),
+                onTap: () => showPaycheckDetails(
+                  context,
+                  paycheck,
+                  api,
+                  refresh,
+                  canEdit,
+                ),
               );
             }).toList(),
           ),
@@ -2501,6 +2527,10 @@ class _AddPaycheckScreenState extends State<AddPaycheckScreen> {
     accountId ??=
         profile?['default_account_id'] as int? ??
         (accounts.isNotEmpty ? accounts.first['id'] as int : null);
+    final depositAccount = accounts.cast<Map<String, dynamic>?>().firstWhere(
+      (account) => account?['id'] == accountId,
+      orElse: () => null,
+    );
     return _Page(
       title: 'Add Paycheck',
       child: _FormCard(
@@ -2541,15 +2571,15 @@ class _AddPaycheckScreenState extends State<AddPaycheckScreen> {
               text:
                   'Expected deposit from ${profile['name']}: ${money(profile['net_pay_amount'])}',
             ),
-          _DropdownField<int>(
-            label: 'Deposit account',
-            value: accountId,
-            values: accounts.map((a) => a['id'] as int).toList(),
-            labelFor: (id) =>
-                accounts.firstWhere((a) => a['id'] == id)['name'].toString(),
-            onChanged: (v) => setState(() => accountId = v),
-            errorText: submitted && accountId == null ? 'Required' : null,
-          ),
+          if (depositAccount != null)
+            _BalanceHint(
+              text:
+                  'Default deposit account: ${depositAccount['name']}. Chunk allocations in other accounts will be moved there automatically.',
+            ),
+          if (accountId != null && depositAccount == null)
+            const _Notice(
+              'The paycheck profile default account is inactive. Select an active default account in Paycheck Setup before adding this paycheck.',
+            ),
           _DropdownField(
             label: 'Amount',
             value: mode,
@@ -2586,12 +2616,18 @@ class _AddPaycheckScreenState extends State<AddPaycheckScreen> {
     final paycheckAmount = mode == 'custom'
         ? parseMoney(custom.text)
         : parseMoney('${profile?['net_pay_amount'] ?? 0}');
-    if (profile == null || accountId == null || paycheckAmount <= 0) return;
+    final accountIsActive = listOfMaps(
+      widget.data['accounts'],
+    ).any((account) => account['id'] == accountId);
+    if (profile == null ||
+        accountId == null ||
+        !accountIsActive ||
+        paycheckAmount <= 0) {
+      return;
+    }
 
     final eligibleChunks = listOfMaps(widget.data['chunks']).where((chunk) {
-      return chunk['is_active'] != false &&
-          (chunk['chunk_type']?.toString() == 'loan' ||
-              chunk['account_id'] == accountId);
+      return chunk['is_active'] != false;
     }).toList();
     final configuredTotal = eligibleChunks.fold<double>(
       0,
@@ -2683,7 +2719,13 @@ class _AddPaycheckScreenState extends State<AddPaycheckScreen> {
                                     value ?? false,
                               ),
                             ),
-                            Expanded(child: Text(chunk['name'].toString())),
+                            Expanded(
+                              child: Text(
+                                chunk['chunk_type']?.toString() == 'loan'
+                                    ? '${chunk['name']} (Loan)'
+                                    : '${chunk['name']} (${chunk['account_name']})',
+                              ),
+                            ),
                             SizedBox(
                               width: 150,
                               child: _MoneyField(
@@ -3934,6 +3976,7 @@ class _DropdownField<T> extends StatelessWidget {
     required this.onChanged,
     this.labelFor,
     this.errorText,
+    this.enabled = true,
   });
   final String label;
   final T? value;
@@ -3941,6 +3984,7 @@ class _DropdownField<T> extends StatelessWidget {
   final ValueChanged<T?> onChanged;
   final String Function(T value)? labelFor;
   final String? errorText;
+  final bool enabled;
 
   @override
   Widget build(BuildContext context) {
@@ -3955,7 +3999,7 @@ class _DropdownField<T> extends StatelessWidget {
             ),
           )
           .toList(),
-      onChanged: values.isEmpty ? null : onChanged,
+      onChanged: values.isEmpty || !enabled ? null : onChanged,
     );
   }
 }
@@ -4170,6 +4214,7 @@ Future<void> showChunkDialog(
                 values: const ['standard', 'loan'],
                 labelFor: (value) => value == 'loan' ? 'Loan' : 'Standard',
                 onChanged: (v) => setState(() => chunkType = v ?? chunkType),
+                enabled: !isEditing,
               ),
               if (chunkType != 'loan') ...[
                 const SizedBox(height: 12),
@@ -4304,6 +4349,126 @@ String formatDateTime(dynamic value) {
 String balanceBeforeAfterText(dynamic before, dynamic after) {
   if (before == null && after == null) return 'Not recorded';
   return '${money(before)} before -> ${money(after)} after';
+}
+
+Future<void> showPaycheckDetails(
+  BuildContext context,
+  Map<String, dynamic> paycheck,
+  BudgetApi api,
+  VoidCallback refresh,
+  bool canEdit,
+) async {
+  final allocations = listOfMaps(paycheck['allocations']);
+  final shouldRevert = await showDialog<bool>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: const Text('Paycheck Details'),
+      content: SizedBox(
+        width: 560,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _DetailLine(
+                label: 'Paycheck profile',
+                value:
+                    paycheck['paycheck_profile_name']?.toString() ??
+                    'Deleted paycheck profile',
+              ),
+              _DetailLine(
+                label: 'Deposit account',
+                value: paycheck['account_name']?.toString() ?? 'Unknown',
+              ),
+              _DetailLine(
+                label: 'Added',
+                value: formatDateTime(paycheck['created_at']),
+              ),
+              _DetailLine(
+                label: 'Amount',
+                value: money(paycheck['net_amount']),
+              ),
+              _DetailLine(
+                label: 'Allocated',
+                value: money(paycheck['allocated_amount']),
+              ),
+              _DetailLine(
+                label: 'Unallocated',
+                value: money(paycheck['unallocated_amount']),
+              ),
+              if (paycheck['is_reverted'] == true)
+                _DetailLine(
+                  label: 'Reverted',
+                  value: formatDateTime(paycheck['reverted_at']),
+                ),
+              const SizedBox(height: 12),
+              const Text(
+                'Chunk Allocations',
+                style: TextStyle(fontWeight: FontWeight.w800),
+              ),
+              const SizedBox(height: 6),
+              if (allocations.isEmpty) const Text('No chunks were allocated.'),
+              for (final allocation in allocations)
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  dense: true,
+                  title: Text(allocation['chunk_name'].toString()),
+                  subtitle: Text(
+                    '${allocation['chunk_type']?.toString() == 'loan' ? 'Loan payment' : allocation['account_name']?.toString() ?? 'Unknown account'}\n'
+                    '${allocation['chunk_type']?.toString() == 'loan' ? balanceBeforeAfterText(allocation['loan_balance_before'], allocation['loan_balance_after']) : balanceBeforeAfterText(allocation['balance_before'], allocation['balance_after'])}',
+                  ),
+                  isThreeLine: true,
+                  trailing: Text(
+                    money(allocation['amount']),
+                    style: const TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context, false),
+          child: const Text('Close'),
+        ),
+        if (canEdit && paycheck['is_reverted'] != true)
+          FilledButton.tonalIcon(
+            onPressed: () => Navigator.pop(context, true),
+            icon: const Icon(Icons.undo),
+            label: const Text('Revert'),
+          ),
+      ],
+    ),
+  );
+  if (shouldRevert != true || !context.mounted) return;
+  final confirmed = await showDialog<bool>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: const Text('Revert Paycheck?'),
+      content: const Text(
+        'This removes this paycheck and its chunk allocations from the current balances. This action cannot be undone.',
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context, false),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(context, true),
+          child: const Text('Revert Paycheck'),
+        ),
+      ],
+    ),
+  );
+  if (confirmed != true || !context.mounted) return;
+  try {
+    await api.post('/api/paychecks/${paycheck['id']}/revert', {});
+    refresh();
+    if (context.mounted) toast(context, 'Paycheck reverted');
+  } catch (error) {
+    if (context.mounted) toast(context, error.toString());
+  }
 }
 
 void showTransferDetails(

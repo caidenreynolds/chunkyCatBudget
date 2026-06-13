@@ -104,11 +104,13 @@ Frontend:
 - `DashboardScreen` shows account totals, quick actions, accounts, chunks, and recent transfers.
 - `_DashboardActions` provides quick navigation to add paycheck, add transfer, accounts, chunks, and overview.
 - Recent Transfers rows call `showTransferDetails()` when tapped/clicked.
+- Paycheck rows open a detail dialog with the added date/time, deposit account, total, unallocated amount, and every chunk allocation.
+- Active paycheck records can be reverted from the detail dialog.
 
 Backend:
 
 - `dashboard_summary()` handles `/api/dashboard/summary`.
-- It returns totals, account summaries, chunks, recent money movements, recent paychecks, paycheck profiles, and first paycheck profile for backward compatibility.
+- It returns totals, account summaries, chunks, recent money movements, paycheck records, paycheck profiles, and first paycheck profile for backward compatibility.
 
 ## Budget Overview
 
@@ -155,8 +157,7 @@ Database:
 
 Frontend:
 
-- `AddPaycheckScreen` lets the user choose a paycheck profile and deposit account.
-- It defaults the deposit account from the selected paycheck profile.
+- `AddPaycheckScreen` lets the user choose a paycheck profile and uses that profile's default deposit account.
 - It shows the expected deposit amount before submit.
 - It can use expected net pay or a custom amount.
 - Required fields show an inline red `Required` error after an attempted add.
@@ -166,15 +167,24 @@ Backend:
 
 - `add_paycheck()` handles `POST /api/paychecks/add`.
 - `list_paychecks()` handles `GET /api/paychecks`.
+- `revert_paycheck()` handles `POST /api/paychecks/{paycheck_id}/revert`.
 - `AddPaycheckIn` is the request model.
 
 Behavior:
 
-- Adds net pay to the selected/default deposit account.
-- Allocates paycheck money into active chunks for that same account, in chunk order.
+- Adds net pay to the paycheck profile's default deposit account.
+- Allocates paycheck money into all active chunks, in chunk order.
+- Standard chunk allocations in another account automatically move that amount from the paycheck's default account into the chunk's account.
 - Custom reviewed allocations cannot exceed each chunk's configured amount or the paycheck total.
 - Loan allocations are capped at the remaining loan balance.
-- Remaining money becomes unallocated in that account.
+- Remaining money becomes unallocated in the paycheck's default account.
+- Every paycheck remains as a dated record with its exact chunk allocations and revert status.
+- Reverting reverses the paycheck's account and standard chunk effects. Loan balances are restored only when they have not changed since that paycheck.
+
+Database:
+
+- `paychecks.reverted_at` records when a paycheck was reverted.
+- `paycheck_allocations` stores the allocation account, chunk name, and before/after standard or loan balances needed for details and safe revert behavior.
 
 ## Accounts
 
@@ -207,7 +217,7 @@ Frontend:
 
 - `ChunksScreen` lists chunks and opens chunk creation/edit dialogs.
 - `ChunksScreen` supports select/delete mode. Deleting a chunk archives it, zeroes its allocated balance, and hides it from active chunk lists. This returns that amount to the account's computed unallocated balance while preserving historical references.
-- Chunk rows can be opened to rename chunks, change account, change amount per paycheck, and edit loan settings.
+- Chunk rows can be opened to rename chunks, change account, change amount per paycheck, and edit loan settings. A chunk's type cannot be changed after creation.
 - `showChunkDialog()` creates or edits a chunk.
 
 Backend:
