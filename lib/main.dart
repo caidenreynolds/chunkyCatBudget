@@ -212,22 +212,27 @@ class _BudgetHomeState extends State<BudgetHome> {
   var selected = 0;
   Map<String, dynamic>? currentUser;
   Map<String, dynamic>? selectedProfile;
+  Map<String, dynamic>? summaryData;
   Future<Map<String, dynamic>>? summaryFuture;
 
   final screens = const [
     ('Dashboard', Icons.dashboard_outlined),
-    ('Paycheck Setup', Icons.payments_outlined),
+    ('Budget Overview', Icons.fact_check_outlined),
+    ('Add Paycheck', Icons.add_circle_outline),
     ('Accounts', Icons.account_balance_wallet_outlined),
     ('Chunks', Icons.savings_outlined),
-    ('Add Paycheck', Icons.add_circle_outline),
     ('Transfers', Icons.swap_horiz_outlined),
     ('Transactions', Icons.receipt_long_outlined),
+    ('Paycheck Setup', Icons.payments_outlined),
     ('Settings', Icons.settings_outlined),
-    ('Budget Overview', Icons.fact_check_outlined),
   ];
 
   Future<Map<String, dynamic>> _loadSummary() async {
-    return Map<String, dynamic>.from(await api.get('/api/dashboard/summary'));
+    final data = Map<String, dynamic>.from(
+      await api.get('/api/dashboard/summary'),
+    );
+    if (mounted) setState(() => summaryData = data);
+    return data;
   }
 
   void refresh() {
@@ -240,6 +245,7 @@ class _BudgetHomeState extends State<BudgetHome> {
       selectedProfile = null;
       api.activeProfileId = null;
       selected = 0;
+      summaryData = null;
       summaryFuture = null;
     });
   }
@@ -249,6 +255,7 @@ class _BudgetHomeState extends State<BudgetHome> {
       selectedProfile = profile;
       api.activeProfileId = profile['id'] as int;
       selected = 0;
+      summaryData = null;
       summaryFuture = _loadSummary();
     });
   }
@@ -258,6 +265,7 @@ class _BudgetHomeState extends State<BudgetHome> {
       selectedProfile = null;
       api.activeProfileId = null;
       selected = 0;
+      summaryData = null;
       summaryFuture = null;
     });
   }
@@ -268,6 +276,7 @@ class _BudgetHomeState extends State<BudgetHome> {
       selectedProfile = null;
       api.activeProfileId = null;
       selected = 0;
+      summaryData = null;
       summaryFuture = null;
     });
   }
@@ -296,10 +305,10 @@ class _BudgetHomeState extends State<BudgetHome> {
     return FutureBuilder<Map<String, dynamic>>(
       future: summaryFuture,
       builder: (context, snapshot) {
-        final data = snapshot.data;
+        final data = snapshot.data ?? summaryData;
         final isLoading =
             snapshot.connectionState == ConnectionState.waiting && data == null;
-        final error = snapshot.error;
+        final error = data == null ? snapshot.error : null;
         return LayoutBuilder(
           builder: (context, constraints) {
             final isDesktop = constraints.maxWidth >= 860;
@@ -424,27 +433,42 @@ class _LoginScreenState extends State<LoginScreen> {
                         style: TextStyle(color: Color(0xFF667085)),
                       ),
                       const SizedBox(height: 22),
-                      TextField(
-                        controller: email,
-                        keyboardType: TextInputType.emailAddress,
-                        autofillHints: const [AutofillHints.email],
-                        decoration: InputDecoration(
-                          labelText: 'Email',
-                          errorText: submitted && email.text.trim().isEmpty
-                              ? 'Required'
-                              : null,
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      TextField(
-                        controller: password,
-                        obscureText: true,
-                        autofillHints: const [AutofillHints.password],
-                        decoration: InputDecoration(
-                          labelText: 'Password',
-                          errorText: submitted && password.text.isEmpty
-                              ? 'Required'
-                              : null,
+                      AutofillGroup(
+                        child: Column(
+                          children: [
+                            TextField(
+                              controller: email,
+                              keyboardType: TextInputType.emailAddress,
+                              textInputAction: TextInputAction.next,
+                              autofillHints: const [
+                                AutofillHints.username,
+                                AutofillHints.email,
+                              ],
+                              decoration: InputDecoration(
+                                labelText: 'Email',
+                                errorText:
+                                    submitted && email.text.trim().isEmpty
+                                    ? 'Required'
+                                    : null,
+                              ),
+                            ),
+                            const SizedBox(height: 12),
+                            TextField(
+                              controller: password,
+                              obscureText: true,
+                              textInputAction: TextInputAction.done,
+                              autofillHints: const [AutofillHints.password],
+                              onSubmitted: (_) {
+                                if (!signingIn) _signIn();
+                              },
+                              decoration: InputDecoration(
+                                labelText: 'Password',
+                                errorText: submitted && password.text.isEmpty
+                                    ? 'Required'
+                                    : null,
+                              ),
+                            ),
+                          ],
                         ),
                       ),
                       const SizedBox(height: 18),
@@ -1068,7 +1092,7 @@ class _PhoneShell extends StatelessWidget {
     required this.child,
   });
 
-  static const routes = [0, 8, 5, 3, 9];
+  static const routes = [0, 1, 5, 4, 9];
 
   final int selected;
   final ValueChanged<int> onSelect;
@@ -1318,25 +1342,20 @@ class _ScreenHost extends StatelessWidget {
         goTo: goTo,
         canEdit: canEdit,
       ),
-      1 => PaycheckSetupScreen(
+      1 => BudgetOverviewScreen(data: data),
+      2 => AddPaycheckScreen(
         data: data,
         api: api,
         refresh: refresh,
         canEdit: canEdit,
       ),
-      2 => AccountsScreen(
+      3 => AccountsScreen(
         data: data,
         api: api,
         refresh: refresh,
         canEdit: canEdit,
       ),
-      3 => ChunksScreen(
-        data: data,
-        api: api,
-        refresh: refresh,
-        canEdit: canEdit,
-      ),
-      4 => AddPaycheckScreen(
+      4 => ChunksScreen(
         data: data,
         api: api,
         refresh: refresh,
@@ -1354,7 +1373,12 @@ class _ScreenHost extends StatelessWidget {
         refresh: refresh,
         canEdit: canEdit,
       ),
-      8 => BudgetOverviewScreen(data: data),
+      7 => PaycheckSetupScreen(
+        data: data,
+        api: api,
+        refresh: refresh,
+        canEdit: canEdit,
+      ),
       9 => MobileMoreScreen(goTo: goTo),
       _ => SettingsScreen(
         api: api,
@@ -1513,7 +1537,7 @@ class _DashboardActions extends StatelessWidget {
         runSpacing: 12,
         children: [
           FilledButton.icon(
-            onPressed: () => goTo(4),
+            onPressed: () => goTo(2),
             icon: const Icon(Icons.add),
             label: const Text('Add Paycheck'),
           ),
@@ -1523,17 +1547,17 @@ class _DashboardActions extends StatelessWidget {
             label: const Text('Add Transfer'),
           ),
           OutlinedButton.icon(
-            onPressed: () => goTo(2),
+            onPressed: () => goTo(3),
             icon: const Icon(Icons.add_card),
             label: const Text('Account'),
           ),
           OutlinedButton.icon(
-            onPressed: () => goTo(3),
+            onPressed: () => goTo(4),
             icon: const Icon(Icons.playlist_add),
             label: const Text('Chunk'),
           ),
           OutlinedButton.icon(
-            onPressed: () => goTo(8),
+            onPressed: () => goTo(1),
             icon: const Icon(Icons.fact_check_outlined),
             label: const Text('Overview'),
           ),
@@ -1547,7 +1571,7 @@ class _DashboardActions extends StatelessWidget {
         SizedBox(
           height: 52,
           child: FilledButton.icon(
-            onPressed: () => goTo(4),
+            onPressed: () => goTo(2),
             icon: const Icon(Icons.add),
             label: const Text('Add Paycheck'),
           ),
@@ -1565,7 +1589,7 @@ class _DashboardActions extends StatelessWidget {
         SizedBox(
           height: 50,
           child: OutlinedButton.icon(
-            onPressed: () => goTo(8),
+            onPressed: () => goTo(1),
             icon: const Icon(Icons.fact_check_outlined),
             label: const Text('Overview'),
           ),
@@ -1577,7 +1601,7 @@ class _DashboardActions extends StatelessWidget {
               child: SizedBox(
                 height: 48,
                 child: OutlinedButton.icon(
-                  onPressed: () => goTo(2),
+                  onPressed: () => goTo(3),
                   icon: const Icon(Icons.add_card),
                   label: const Text('Account'),
                 ),
@@ -1588,7 +1612,7 @@ class _DashboardActions extends StatelessWidget {
               child: SizedBox(
                 height: 48,
                 child: OutlinedButton.icon(
-                  onPressed: () => goTo(3),
+                  onPressed: () => goTo(4),
                   icon: const Icon(Icons.playlist_add),
                   label: const Text('Chunk'),
                 ),
@@ -2355,6 +2379,7 @@ class _ChunksScreenState extends State<ChunksScreen> {
     final isPhone = MediaQuery.sizeOf(context).width < 600;
     final chunks = listOfMaps(widget.data['chunks']);
     final accounts = listOfMaps(widget.data['accounts']);
+    final paycheckProfiles = listOfMaps(widget.data['paycheck_profiles']);
     return _Page(
       title: 'Chunks',
       actions: widget.canEdit
@@ -2381,6 +2406,7 @@ class _ChunksScreenState extends State<ChunksScreen> {
                         widget.api,
                         widget.refresh,
                         accounts,
+                        paycheckProfiles: paycheckProfiles,
                       ),
                 icon: const Icon(Icons.add),
                 label: const Text('New'),
@@ -2406,12 +2432,15 @@ class _ChunksScreenState extends State<ChunksScreen> {
               final accountText = c['chunk_type']?.toString() == 'loan'
                   ? ''
                   : '  |  ${c['account_name']}';
+              final paycheckText = c['paycheck_profile_name'] == null
+                  ? '  |  No paycheck assigned'
+                  : '  |  ${c['paycheck_profile_name']}';
               return _ListRow(
                 title: selecting
                     ? '${selected ? '✓ ' : ''}${c['name']}'
                     : c['name'].toString(),
                 subtitle:
-                    '$type$accountText  |  ${money(c['amount_per_paycheck'])} per paycheck$loanText',
+                    '$type$accountText$paycheckText  |  ${money(c['amount_per_paycheck'])} per paycheck$loanText',
                 trailing: c['chunk_type']?.toString() == 'loan'
                     ? money(c['loan_balance'])
                     : money(c['balance']),
@@ -2427,6 +2456,7 @@ class _ChunksScreenState extends State<ChunksScreen> {
                         widget.api,
                         widget.refresh,
                         accounts,
+                        paycheckProfiles: paycheckProfiles,
                         chunk: c,
                       )
                     : null,
@@ -2627,7 +2657,9 @@ class _AddPaycheckScreenState extends State<AddPaycheckScreen> {
     }
 
     final eligibleChunks = listOfMaps(widget.data['chunks']).where((chunk) {
-      return chunk['is_active'] != false;
+      return chunk['is_active'] != false &&
+          chunk['paycheck_profile_id'] == paycheckProfileId &&
+          parseMoney('${chunk['amount_per_paycheck'] ?? 0}') > 0;
     }).toList();
     final configuredTotal = eligibleChunks.fold<double>(
       0,
@@ -2704,7 +2736,7 @@ class _AddPaycheckScreenState extends State<AddPaycheckScreen> {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     const _Notice(
-                      'This paycheck is less than the configured chunk total. Deselect chunks or lower one-time amounts before adding it.',
+                      'This paycheck is less than the configured total for chunks assigned to this paycheck. Deselect chunks or lower one-time amounts before adding it.',
                     ),
                     const SizedBox(height: 12),
                     for (final chunk in chunks)
@@ -3551,22 +3583,22 @@ class MobileMoreScreen extends StatelessWidget {
           _MoreTile(
             icon: Icons.payments_outlined,
             title: 'Paycheck Setup',
-            onTap: () => goTo(1),
+            onTap: () => goTo(7),
           ),
           _MoreTile(
             icon: Icons.add_circle_outline,
             title: 'Add Paycheck',
-            onTap: () => goTo(4),
+            onTap: () => goTo(2),
           ),
           _MoreTile(
             icon: Icons.account_balance_wallet_outlined,
             title: 'Accounts',
-            onTap: () => goTo(2),
+            onTap: () => goTo(3),
           ),
           _MoreTile(
             icon: Icons.fact_check_outlined,
             title: 'Budget Overview',
-            onTap: () => goTo(8),
+            onTap: () => goTo(1),
           ),
           _MoreTile(
             icon: Icons.receipt_long_outlined,
@@ -3576,7 +3608,7 @@ class MobileMoreScreen extends StatelessWidget {
           _MoreTile(
             icon: Icons.settings_outlined,
             title: 'Settings',
-            onTap: () => goTo(7),
+            onTap: () => goTo(8),
           ),
         ],
       ),
@@ -4173,6 +4205,7 @@ Future<void> showChunkDialog(
   BudgetApi api,
   VoidCallback refresh,
   List<Map<String, dynamic>> accounts, {
+  required List<Map<String, dynamic>> paycheckProfiles,
   Map<String, dynamic>? chunk,
 }) async {
   final name = TextEditingController(text: chunk?['name']?.toString() ?? '');
@@ -4186,6 +4219,7 @@ Future<void> showChunkDialog(
     text: chunk?['loan_interest_rate']?.toString() ?? '',
   );
   var accountId = chunk?['account_id'] as int? ?? accounts.first['id'] as int;
+  var paycheckProfileId = chunk?['paycheck_profile_id'] as int?;
   var chunkType = chunk?['chunk_type']?.toString() ?? 'standard';
   final isEditing = chunk != null;
   var submitted = false;
@@ -4232,10 +4266,32 @@ Future<void> showChunkDialog(
               _MoneyField(
                 label: 'Amount per paycheck',
                 controller: amount,
-                errorText: submitted && amount.text.trim().isEmpty
-                    ? 'Required'
+                onChanged: (_) => setState(() {}),
+                errorText: submitted
+                    ? amount.text.trim().isEmpty
+                          ? 'Required'
+                          : parseMoney(amount.text) < 0
+                          ? 'Must be zero or more'
+                          : null
                     : null,
               ),
+              if (parseMoney(amount.text) > 0) ...[
+                const SizedBox(height: 12),
+                _DropdownField<int>(
+                  label: 'Assigned paycheck',
+                  value: paycheckProfileId,
+                  values: paycheckProfiles
+                      .map((profile) => profile['id'] as int)
+                      .toList(),
+                  labelFor: (id) => paycheckProfiles
+                      .firstWhere((profile) => profile['id'] == id)['name']
+                      .toString(),
+                  onChanged: (v) => setState(() => paycheckProfileId = v),
+                  errorText: submitted && paycheckProfileId == null
+                      ? 'Required'
+                      : null,
+                ),
+              ],
               if (chunkType == 'loan') ...[
                 const SizedBox(height: 12),
                 _MoneyField(
@@ -4272,14 +4328,21 @@ Future<void> showChunkDialog(
           FilledButton(
             onPressed: () async {
               setState(() => submitted = true);
-              if (name.text.trim().isEmpty || amount.text.trim().isEmpty) {
+              final amountPerPaycheck = parseMoney(amount.text);
+              if (name.text.trim().isEmpty ||
+                  amount.text.trim().isEmpty ||
+                  amountPerPaycheck < 0 ||
+                  (amountPerPaycheck > 0 && paycheckProfileId == null)) {
                 return;
               }
               final payload = {
                 'name': name.text,
                 'account_id': chunkType == 'loan' ? null : accountId,
+                'paycheck_profile_id': amountPerPaycheck > 0
+                    ? paycheckProfileId
+                    : null,
                 'chunk_type': chunkType,
-                'amount_per_paycheck': parseMoney(amount.text),
+                'amount_per_paycheck': amountPerPaycheck,
                 'balance': chunk?['balance'] ?? 0,
                 'loan_balance':
                     chunkType == 'loan' && loanBalance.text.isNotEmpty

@@ -128,6 +128,7 @@ class PaycheckProfileIn(BaseModel):
 class ChunkIn(BaseModel):
     name: str = Field(min_length=1)
     account_id: int | None = None
+    paycheck_profile_id: int | None = None
     chunk_type: Literal["standard", "loan"] = "standard"
     amount_per_paycheck: float = Field(ge=0)
     balance: float = Field(default=0, ge=0)
@@ -251,6 +252,7 @@ def init_db() -> None:
                 profile_id INTEGER NOT NULL DEFAULT 1 REFERENCES budget_profiles(id),
                 name TEXT NOT NULL,
                 account_id INTEGER NOT NULL REFERENCES accounts(id),
+                paycheck_profile_id INTEGER REFERENCES paycheck_profiles(id),
                 chunk_type TEXT NOT NULL DEFAULT 'standard',
                 amount_per_paycheck REAL NOT NULL,
                 balance REAL NOT NULL DEFAULT 0,
@@ -359,6 +361,8 @@ def migrate_db(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE money_movements ADD COLUMN {column} REAL")
     if not column_exists(conn, "budget_chunks", "chunk_type"):
         conn.execute("ALTER TABLE budget_chunks ADD COLUMN chunk_type TEXT NOT NULL DEFAULT 'standard'")
+    if not column_exists(conn, "budget_chunks", "paycheck_profile_id"):
+        conn.execute("ALTER TABLE budget_chunks ADD COLUMN paycheck_profile_id INTEGER REFERENCES paycheck_profiles(id)")
     if not column_exists(conn, "budget_chunks", "loan_balance"):
         conn.execute("ALTER TABLE budget_chunks ADD COLUMN loan_balance REAL")
     if not column_exists(conn, "budget_chunks", "loan_interest_rate"):
@@ -510,6 +514,18 @@ def account_summaries(conn: sqlite3.Connection, profile_id: int = 1, include_ina
 
 def account_summary(conn: sqlite3.Connection, account_id: int, profile_id: int = 1) -> dict[str, Any] | None:
     return next((account for account in account_summaries(conn, profile_id) if account["id"] == account_id), None)
+
+
+def validate_chunk_paycheck_profile(conn: sqlite3.Connection, paycheck_profile_id: int | None, amount_per_paycheck: float, profile_id: int) -> None:
+    if amount_per_paycheck > 0 and paycheck_profile_id is None:
+        raise HTTPException(status_code=400, detail="Assigned paycheck is required when amount per paycheck is greater than zero")
+    if paycheck_profile_id is not None:
+        paycheck_profile = conn.execute(
+            "SELECT * FROM paycheck_profiles WHERE id = ? AND profile_id = ?",
+            (paycheck_profile_id, profile_id),
+        ).fetchone()
+        if not paycheck_profile:
+            raise HTTPException(status_code=404, detail="Assigned paycheck not found")
 
 
 def payments_per_year(pay_frequency: str) -> float:
@@ -747,8 +763,8 @@ def delete_budget_profile(profile_id: int) -> dict[str, bool]:
         conn.execute("DELETE FROM transactions WHERE profile_id = ?", (profile_id,))
         conn.execute("DELETE FROM money_movements WHERE profile_id = ?", (profile_id,))
         conn.execute("DELETE FROM paychecks WHERE profile_id = ?", (profile_id,))
-        conn.execute("DELETE FROM paycheck_profiles WHERE profile_id = ?", (profile_id,))
         conn.execute("DELETE FROM budget_chunks WHERE profile_id = ?", (profile_id,))
+        conn.execute("DELETE FROM paycheck_profiles WHERE profile_id = ?", (profile_id,))
         conn.execute("DELETE FROM accounts WHERE profile_id = ?", (profile_id,))
         conn.execute("DELETE FROM profile_invitations WHERE profile_id = ?", (profile_id,))
         conn.execute("DELETE FROM user_profile_access WHERE profile_id = ?", (profile_id,))
@@ -849,9 +865,10 @@ def dashboard_summary(profile_id: int = 1) -> dict[str, Any]:
         chunks = rows_to_dicts(
             conn.execute(
                 """
-                SELECT c.*, a.name AS account_name
+                SELECT c.*, a.name AS account_name, pp.name AS paycheck_profile_name
                 FROM budget_chunks c
                 JOIN accounts a ON a.id = c.account_id
+                LEFT JOIN paycheck_profiles pp ON pp.id = c.paycheck_profile_id
                 WHERE c.profile_id = ? AND c.is_active = 1
                 ORDER BY c.name
                 """,
@@ -865,7 +882,7 @@ def dashboard_summary(profile_id: int = 1) -> dict[str, Any]:
                 "SELECT * FROM money_movements WHERE profile_id = ? ORDER BY created_at DESC LIMIT 8", (profile_id,)
             ).fetchall()
         )
-        paychecks = paycheck_records(conn, profile_id)
+        paychecks = paycheck_records(conn, profile_id, 8)
         paycheck_profiles = rows_to_dicts(
             conn.execute("SELECT * FROM paycheck_profiles WHERE profile_id = ? ORDER BY id", (profile_id,)).fetchall()
         )
@@ -1050,6 +1067,16 @@ def delete_paycheck_profile(paycheck_profile_id: int, profile_id: int = 1) -> di
         ).fetchone()
         if not paycheck_profile:
             raise HTTPException(status_code=404, detail="Paycheck profile not found")
+        assigned_chunks = conn.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM budget_chunks
+            WHERE profile_id = ? AND paycheck_profile_id = ? AND is_active = 1 AND amount_per_paycheck > 0
+            """,
+            (profile_id, paycheck_profile_id),
+        ).fetchone()
+        if assigned_chunks and assigned_chunks["count"]:
+            raise HTTPException(status_code=400, detail="Move or zero chunks assigned to this paycheck before deleting it")
         conn.execute("UPDATE paychecks SET paycheck_profile_id = NULL WHERE paycheck_profile_id = ?", (paycheck_profile_id,))
         conn.execute("DELETE FROM paycheck_profiles WHERE id = ?", (paycheck_profile_id,))
         return {"deleted": True}
@@ -1062,9 +1089,10 @@ def list_chunks(profile_id: int = 1) -> list[dict[str, Any]]:
         chunks = rows_to_dicts(
             conn.execute(
                 """
-                SELECT c.*, a.name AS account_name
+                SELECT c.*, a.name AS account_name, pp.name AS paycheck_profile_name
                 FROM budget_chunks c
                 JOIN accounts a ON a.id = c.account_id
+                LEFT JOIN paycheck_profiles pp ON pp.id = c.paycheck_profile_id
                 WHERE c.profile_id = ? AND c.is_active = 1
                 ORDER BY c.name
                 """,
@@ -1092,16 +1120,18 @@ def create_chunk(payload: ChunkIn, profile_id: int = 1) -> dict[str, Any]:
         account = get_account_or_404(conn, account_id)
         if account["profile_id"] != profile_id:
             raise HTTPException(status_code=400, detail="Chunk account must belong to the selected budget profile")
+        validate_chunk_paycheck_profile(conn, payload.paycheck_profile_id, payload.amount_per_paycheck, profile_id)
         cursor = conn.execute(
             """
             INSERT INTO budget_chunks
-                (profile_id, name, account_id, chunk_type, amount_per_paycheck, balance, loan_balance, loan_interest_rate, is_active, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (profile_id, name, account_id, paycheck_profile_id, chunk_type, amount_per_paycheck, balance, loan_balance, loan_interest_rate, is_active, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 profile_id,
                 payload.name,
                 account_id,
+                payload.paycheck_profile_id,
                 payload.chunk_type,
                 payload.amount_per_paycheck,
                 payload.balance,
@@ -1114,9 +1144,10 @@ def create_chunk(payload: ChunkIn, profile_id: int = 1) -> dict[str, Any]:
         )
         chunk = conn.execute(
             """
-            SELECT c.*, a.name AS account_name
+            SELECT c.*, a.name AS account_name, pp.name AS paycheck_profile_name
             FROM budget_chunks c
             JOIN accounts a ON a.id = c.account_id
+            LEFT JOIN paycheck_profiles pp ON pp.id = c.paycheck_profile_id
             WHERE c.id = ? AND c.profile_id = ?
             """,
             (cursor.lastrowid, profile_id),
@@ -1138,16 +1169,18 @@ def update_chunk(chunk_id: int, payload: ChunkIn, profile_id: int = 1) -> dict[s
         account = get_account_or_404(conn, account_id)
         if chunk["profile_id"] != profile_id or account["profile_id"] != profile_id:
             raise HTTPException(status_code=404, detail="Chunk not found")
+        validate_chunk_paycheck_profile(conn, payload.paycheck_profile_id, payload.amount_per_paycheck, profile_id)
         conn.execute(
             """
             UPDATE budget_chunks
-            SET name = ?, account_id = ?, chunk_type = ?, amount_per_paycheck = ?, balance = ?,
+            SET name = ?, account_id = ?, paycheck_profile_id = ?, chunk_type = ?, amount_per_paycheck = ?, balance = ?,
                 loan_balance = ?, loan_interest_rate = ?, is_active = ?, updated_at = ?
             WHERE id = ?
             """,
             (
                 payload.name,
                 account_id,
+                payload.paycheck_profile_id,
                 chunk["chunk_type"],
                 payload.amount_per_paycheck,
                 payload.balance,
@@ -1160,9 +1193,10 @@ def update_chunk(chunk_id: int, payload: ChunkIn, profile_id: int = 1) -> dict[s
         )
         chunk = conn.execute(
             """
-            SELECT c.*, a.name AS account_name
+            SELECT c.*, a.name AS account_name, pp.name AS paycheck_profile_name
             FROM budget_chunks c
             JOIN accounts a ON a.id = c.account_id
+            LEFT JOIN paycheck_profiles pp ON pp.id = c.paycheck_profile_id
             WHERE c.id = ? AND c.profile_id = ?
             """,
             (chunk_id, profile_id),
@@ -1231,9 +1265,10 @@ def add_paycheck(payload: AddPaycheckIn, profile_id: int = 1) -> dict[str, Any]:
             """
             SELECT * FROM budget_chunks
             WHERE profile_id = ? AND is_active = 1
+              AND paycheck_profile_id = ?
             ORDER BY id
             """,
-            (profile_id,),
+            (profile_id, profile["id"]),
         ).fetchall()
         chunk_by_id = {chunk["id"]: chunk for chunk in chunks}
         requested_allocations = None

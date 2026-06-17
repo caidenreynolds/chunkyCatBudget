@@ -77,14 +77,14 @@ Frontend:
 Navigation indexes:
 
 - `0` Dashboard
-- `1` Paycheck Setup
-- `2` Accounts
-- `3` Chunks
-- `4` Add Paycheck
+- `1` Budget Overview
+- `2` Add Paycheck
+- `3` Accounts
+- `4` Chunks
 - `5` Transfers
 - `6` Transactions
-- `7` Settings
-- `8` Budget Overview
+- `7` Paycheck Setup
+- `8` Settings
 - `9` Phone More menu
 
 Phone bottom navigation:
@@ -119,6 +119,7 @@ Frontend:
 - `BudgetOverviewScreen` compares expected paycheck income against active chunk deductions.
 - It sums all paycheck profiles' `net_pay_amount`.
 - It subtracts all active chunks' `amount_per_paycheck`.
+- Chunks with positive paycheck amounts must be assigned to a paycheck profile.
 - It shows leftover/unallocated expected per paycheck and warns when chunks exceed expected pay.
 
 Backend:
@@ -173,7 +174,7 @@ Backend:
 Behavior:
 
 - Adds net pay to the paycheck profile's default deposit account.
-- Allocates paycheck money into all active chunks, in chunk order.
+- Allocates paycheck money into active chunks assigned to the selected paycheck profile, in chunk order.
 - Standard chunk allocations in another account automatically move that amount from the paycheck's default account into the chunk's account.
 - Custom reviewed allocations cannot exceed each chunk's configured amount or the paycheck total.
 - Loan allocations are capped at the remaining loan balance.
@@ -218,6 +219,7 @@ Frontend:
 - `ChunksScreen` lists chunks and opens chunk creation/edit dialogs.
 - `ChunksScreen` supports select/delete mode. Deleting a chunk archives it, zeroes its allocated balance, and hides it from active chunk lists. This returns that amount to the account's computed unallocated balance while preserving historical references.
 - Chunk rows can be opened to rename chunks, change account, change amount per paycheck, and edit loan settings. A chunk's type cannot be changed after creation.
+- Chunks with an amount per paycheck greater than zero must be assigned to a paycheck profile.
 - `showChunkDialog()` creates or edits a chunk.
 
 Backend:
@@ -231,6 +233,7 @@ Backend:
 Important rules:
 
 - Chunks belong to one account.
+- Chunks can be assigned to one paycheck profile. Add Paycheck only funds chunks assigned to the selected paycheck profile.
 - Chunk balances contribute to account allocated balance.
 - Account unallocated balance is account balance minus active chunk balances.
 - Standard chunks track allocated budget money.
