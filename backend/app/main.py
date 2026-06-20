@@ -338,8 +338,57 @@ def table_sql(conn: sqlite3.Connection, table: str) -> str:
     return row["sql"] if row and row["sql"] else ""
 
 
+def paycheck_profiles_needs_rebuild(conn: sqlite3.Connection) -> bool:
+    compact_sql = "".join(table_sql(conn, "paycheck_profiles").lower().split())
+    if "check(id=1)" in compact_sql:
+        return True
+    for index in conn.execute("PRAGMA index_list(paycheck_profiles)").fetchall():
+        if not index["unique"]:
+            continue
+        columns = [
+            row["name"]
+            for row in conn.execute(f"PRAGMA index_info({index['name']})").fetchall()
+        ]
+        if columns == ["profile_id"]:
+            return True
+    return False
+
+
+def rebuild_paycheck_profiles(conn: sqlite3.Connection) -> None:
+    # Keep child-table foreign keys aimed at the final table name while replacing
+    # legacy schemas that restricted the table to one row or one row per budget.
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE paycheck_profiles_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                profile_id INTEGER NOT NULL DEFAULT 1 REFERENCES budget_profiles(id),
+                name TEXT NOT NULL DEFAULT 'Paycheck',
+                gross_pay_amount REAL NOT NULL,
+                net_pay_amount REAL NOT NULL,
+                net_pay_mode TEXT NOT NULL,
+                pay_frequency TEXT NOT NULL,
+                default_account_id INTEGER REFERENCES accounts(id),
+                updated_at TEXT NOT NULL
+            );
+            INSERT INTO paycheck_profiles_new
+                (id, profile_id, name, gross_pay_amount, net_pay_amount, net_pay_mode, pay_frequency, default_account_id, updated_at)
+            SELECT id, COALESCE(profile_id, 1), name, gross_pay_amount, net_pay_amount, net_pay_mode, pay_frequency, default_account_id, updated_at
+            FROM paycheck_profiles;
+            DROP TABLE paycheck_profiles;
+            ALTER TABLE paycheck_profiles_new RENAME TO paycheck_profiles;
+            """
+        )
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
+
+
 def migrate_db(conn: sqlite3.Connection) -> None:
     stamp = now()
+    paycheck_profile_schema_needs_rebuild = not column_exists(
+        conn, "paycheck_profiles", "profile_id"
+    ) or paycheck_profiles_needs_rebuild(conn)
     if not column_exists(conn, "users", "display_name"):
         conn.execute("ALTER TABLE users ADD COLUMN display_name TEXT NOT NULL DEFAULT ''")
     if not column_exists(conn, "users", "password_salt"):
@@ -368,7 +417,9 @@ def migrate_db(conn: sqlite3.Connection) -> None:
     if not column_exists(conn, "budget_chunks", "loan_interest_rate"):
         conn.execute("ALTER TABLE budget_chunks ADD COLUMN loan_interest_rate REAL")
     if not column_exists(conn, "paycheck_profiles", "profile_id"):
-        conn.execute("ALTER TABLE paycheck_profiles ADD COLUMN profile_id INTEGER NOT NULL DEFAULT 1 REFERENCES budget_profiles(id)")
+        conn.execute(
+            "ALTER TABLE paycheck_profiles ADD COLUMN profile_id INTEGER REFERENCES budget_profiles(id)"
+        )
     if not column_exists(conn, "paycheck_profiles", "name"):
         conn.execute("ALTER TABLE paycheck_profiles ADD COLUMN name TEXT NOT NULL DEFAULT 'Paycheck'")
     if not column_exists(conn, "paycheck_profiles", "default_account_id"):
@@ -387,6 +438,9 @@ def migrate_db(conn: sqlite3.Connection) -> None:
     ]:
         if not column_exists(conn, "paycheck_allocations", column):
             conn.execute(f"ALTER TABLE paycheck_allocations ADD COLUMN {column} {definition}")
+
+    if paycheck_profile_schema_needs_rebuild:
+        rebuild_paycheck_profiles(conn)
 
     existing_user = conn.execute("SELECT * FROM users ORDER BY id LIMIT 1").fetchone()
     if existing_user is None:
@@ -426,28 +480,6 @@ def migrate_db(conn: sqlite3.Connection) -> None:
     if not column_exists(conn, "paycheck_profiles", "profile_id"):
         conn.execute("ALTER TABLE paycheck_profiles ADD COLUMN profile_id INTEGER NOT NULL DEFAULT 1 REFERENCES budget_profiles(id)")
     conn.execute("UPDATE paycheck_profiles SET profile_id = ? WHERE profile_id IS NULL OR profile_id = 1", (profile_id,))
-    if "UNIQUE(profile_id)" in table_sql(conn, "paycheck_profiles"):
-        conn.executescript(
-            """
-            ALTER TABLE paycheck_profiles RENAME TO paycheck_profiles_old;
-            CREATE TABLE paycheck_profiles (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                profile_id INTEGER NOT NULL DEFAULT 1 REFERENCES budget_profiles(id),
-                name TEXT NOT NULL DEFAULT 'Paycheck',
-                gross_pay_amount REAL NOT NULL,
-                net_pay_amount REAL NOT NULL,
-                net_pay_mode TEXT NOT NULL,
-                pay_frequency TEXT NOT NULL,
-                default_account_id INTEGER REFERENCES accounts(id),
-                updated_at TEXT NOT NULL
-            );
-            INSERT INTO paycheck_profiles
-                (id, profile_id, name, gross_pay_amount, net_pay_amount, net_pay_mode, pay_frequency, default_account_id, updated_at)
-            SELECT id, profile_id, name, gross_pay_amount, net_pay_amount, net_pay_mode, pay_frequency, default_account_id, updated_at
-            FROM paycheck_profiles_old;
-            DROP TABLE paycheck_profiles_old;
-            """
-        )
 
 
 @app.on_event("startup")

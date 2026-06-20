@@ -111,7 +111,17 @@ class BudgetApi {
   }
 
   dynamic _decode(http.Response response) {
-    final body = response.body.isEmpty ? null : jsonDecode(response.body);
+    dynamic body;
+    if (response.body.isNotEmpty) {
+      try {
+        body = jsonDecode(response.body);
+      } on FormatException {
+        if (response.statusCode >= 400) {
+          throw ApiException(_apiErrorMessage(null, response.body));
+        }
+        throw ApiException('The server returned an invalid response.');
+      }
+    }
     if (response.statusCode >= 400) {
       final message = _apiErrorMessage(body, response.body);
       throw ApiException(message);

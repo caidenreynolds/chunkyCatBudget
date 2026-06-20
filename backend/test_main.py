@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import sqlite3
 from pathlib import Path
 
 from fastapi import HTTPException
@@ -134,6 +135,43 @@ class BudgetApiTests(unittest.TestCase):
 
         chunk = self._chunk("Parking lot", checking["id"], 0, None)
         self.assertIsNone(chunk["paycheck_profile_id"])
+
+    def test_legacy_single_paycheck_profile_schema_is_migrated(self) -> None:
+        legacy_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(legacy_dir.cleanup)
+        legacy_path = Path(legacy_dir.name) / "legacy.db"
+        with sqlite3.connect(legacy_path) as conn:
+            conn.execute(
+                """
+                CREATE TABLE paycheck_profiles (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    gross_pay_amount REAL NOT NULL,
+                    net_pay_amount REAL NOT NULL,
+                    net_pay_mode TEXT NOT NULL,
+                    pay_frequency TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO paycheck_profiles
+                    (id, gross_pay_amount, net_pay_amount, net_pay_mode, pay_frequency, updated_at)
+                VALUES (1, 1000, 1000, 'expected', 'biweekly', '2026-01-01T00:00:00Z')
+                """
+            )
+
+        main.DATABASE_URL = f"sqlite:///{legacy_path}"
+        main.init_db()
+        with main.db() as conn:
+            profile_id = conn.execute(
+                "SELECT id FROM budget_profiles ORDER BY id LIMIT 1"
+            ).fetchone()["id"]
+        account = main.create_account(main.AccountIn(name="Checking"), profile_id)
+        second = self._paycheck_profile(account["id"], "Second paycheck")
+
+        self.assertEqual(second["id"], 2)
+        self.assertEqual(len(main.list_paycheck_profiles(profile_id)), 2)
 
     def test_revert_restores_loan_balance_before_paycheck(self) -> None:
         checking = self._account("Checking")
