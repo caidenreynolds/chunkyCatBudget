@@ -2383,11 +2383,13 @@ class ChunksScreen extends StatefulWidget {
 class _ChunksScreenState extends State<ChunksScreen> {
   final selectedChunkIds = <int>{};
   var selecting = false;
+  var sortBy = _ChunkSortBy.account;
+  var sortAscending = true;
 
   @override
   Widget build(BuildContext context) {
     final isPhone = MediaQuery.sizeOf(context).width < 600;
-    final chunks = listOfMaps(widget.data['chunks']);
+    final chunks = listOfMaps(widget.data['chunks'])..sort(_compareChunks);
     final accounts = listOfMaps(widget.data['accounts']);
     final paycheckProfiles = listOfMaps(widget.data['paycheck_profiles']);
     return _Page(
@@ -2426,6 +2428,14 @@ class _ChunksScreenState extends State<ChunksScreen> {
       child: ListView(
         padding: EdgeInsets.all(isPhone ? 14 : 20),
         children: [
+          _ChunkSortBar(
+            sortBy: sortBy,
+            sortAscending: sortAscending,
+            onSortByChanged: (value) => setState(() => sortBy = value),
+            onDirectionChanged: () =>
+                setState(() => sortAscending = !sortAscending),
+          ),
+          const SizedBox(height: 12),
           _DataCard(
             emptyText: accounts.isEmpty
                 ? 'Create an account before adding chunks'
@@ -2478,6 +2488,41 @@ class _ChunksScreenState extends State<ChunksScreen> {
     );
   }
 
+  int _compareChunks(Map<String, dynamic> a, Map<String, dynamic> b) {
+    final result = switch (sortBy) {
+      _ChunkSortBy.account => _compareText(
+        a['account_name'],
+        b['account_name'],
+      ),
+      _ChunkSortBy.type => _compareText(a['chunk_type'], b['chunk_type']),
+      _ChunkSortBy.amountPerPaycheck => _compareMoney(
+        a['amount_per_paycheck'],
+        b['amount_per_paycheck'],
+      ),
+      _ChunkSortBy.paycheck => _compareText(
+        a['paycheck_profile_name'] ?? '',
+        b['paycheck_profile_name'] ?? '',
+      ),
+      _ChunkSortBy.currentBalance => _compareMoney(
+        _currentChunkBalance(a),
+        _currentChunkBalance(b),
+      ),
+    };
+    if (result != 0) return sortAscending ? result : -result;
+    return _compareText(a['name'], b['name']);
+  }
+
+  double _currentChunkBalance(Map<String, dynamic> chunk) =>
+      chunk['chunk_type']?.toString() == 'loan'
+      ? parseMoney('${chunk['loan_balance'] ?? 0}')
+      : parseMoney('${chunk['balance'] ?? 0}');
+
+  int _compareMoney(Object? a, Object? b) =>
+      parseMoney('${a ?? 0}').compareTo(parseMoney('${b ?? 0}'));
+
+  int _compareText(Object? a, Object? b) => (a?.toString().toLowerCase() ?? '')
+      .compareTo(b?.toString().toLowerCase() ?? '');
+
   Future<void> _deleteSelected() async {
     final count = selectedChunkIds.length;
     final confirmed = await showDialog<bool>(
@@ -2515,6 +2560,72 @@ class _ChunksScreenState extends State<ChunksScreen> {
     }
   }
 }
+
+enum _ChunkSortBy { account, type, amountPerPaycheck, paycheck, currentBalance }
+
+class _ChunkSortBar extends StatelessWidget {
+  const _ChunkSortBar({
+    required this.sortBy,
+    required this.sortAscending,
+    required this.onSortByChanged,
+    required this.onDirectionChanged,
+  });
+  final _ChunkSortBy sortBy;
+  final bool sortAscending;
+  final ValueChanged<_ChunkSortBy> onSortByChanged;
+  final VoidCallback onDirectionChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final isPhone = MediaQuery.sizeOf(context).width < 600;
+    final field = _DropdownField<_ChunkSortBy>(
+      label: 'Sort by',
+      value: sortBy,
+      values: _ChunkSortBy.values,
+      labelFor: _chunkSortLabel,
+      onChanged: (value) {
+        if (value != null) onSortByChanged(value);
+      },
+    );
+    final direction = IconButton.filledTonal(
+      onPressed: onDirectionChanged,
+      tooltip: sortAscending ? 'Ascending' : 'Descending',
+      icon: Icon(sortAscending ? Icons.arrow_upward : Icons.arrow_downward),
+    );
+
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: const Color(0xFFE4E7EC)),
+      ),
+      child: isPhone
+          ? Row(
+              children: [
+                Expanded(child: field),
+                const SizedBox(width: 8),
+                direction,
+              ],
+            )
+          : Row(
+              children: [
+                SizedBox(width: 280, child: field),
+                const SizedBox(width: 8),
+                direction,
+              ],
+            ),
+    );
+  }
+}
+
+String _chunkSortLabel(_ChunkSortBy value) => switch (value) {
+  _ChunkSortBy.account => 'Account',
+  _ChunkSortBy.type => 'Loan/Standard',
+  _ChunkSortBy.amountPerPaycheck => 'Amount per paycheck',
+  _ChunkSortBy.paycheck => 'Paycheck',
+  _ChunkSortBy.currentBalance => 'Current balance',
+};
 
 class AddPaycheckScreen extends StatefulWidget {
   const AddPaycheckScreen({
