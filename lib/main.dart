@@ -2458,6 +2458,7 @@ class _ChunksScreenState extends State<ChunksScreen> {
                   ? '  |  No paycheck assigned'
                   : '  |  ${c['paycheck_profile_name']}';
               return _ListRow(
+                wrapSubtitle: true,
                 title: selecting
                     ? '${selected ? '✓ ' : ''}${c['name']}'
                     : c['name'].toString(),
@@ -3959,11 +3960,13 @@ class _ListRow extends StatelessWidget {
     required this.subtitle,
     required this.trailing,
     this.onTap,
+    this.wrapSubtitle = false,
   });
   final String title;
   final String subtitle;
   final String trailing;
   final VoidCallback? onTap;
+  final bool wrapSubtitle;
 
   @override
   Widget build(BuildContext context) {
@@ -3974,7 +3977,12 @@ class _ListRow extends StatelessWidget {
         overflow: TextOverflow.ellipsis,
         style: const TextStyle(fontWeight: FontWeight.w700),
       ),
-      subtitle: Text(subtitle, maxLines: 1, overflow: TextOverflow.ellipsis),
+      subtitle: Text(
+        subtitle,
+        softWrap: wrapSubtitle,
+        maxLines: wrapSubtitle ? null : 1,
+        overflow: wrapSubtitle ? TextOverflow.visible : TextOverflow.ellipsis,
+      ),
       trailing: onTap == null
           ? Text(trailing, style: const TextStyle(fontWeight: FontWeight.w800))
           : Row(
