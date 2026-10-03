@@ -1519,7 +1519,9 @@ class DashboardScreen extends StatelessWidget {
             emptyText: 'No transfers logged',
             children: movements.map((m) {
               return _ListRow(
-                title: '${m['source_type']} to ${m['destination_type']}',
+                title: m['movement_type'] == 'purchase_transaction'
+                    ? '${m['source_type']} purchase/transaction'
+                    : '${m['source_type']} to ${m['destination_type']}',
                 subtitle: m['note'].toString().isEmpty
                     ? formatDateTime(m['created_at'])
                     : m['note'].toString(),
@@ -3020,15 +3022,23 @@ class _TransfersScreenState extends State<TransfersScreen> {
       _DropdownField(
         label: 'Transfer type',
         value: movementType,
-        values: const ['allocation', 'manual_account_transfer'],
+        values: const [
+          'allocation',
+          'manual_account_transfer',
+          'purchase_transaction',
+        ],
         labelFor: (value) => value == 'allocation'
             ? 'Allocation transfer'
-            : 'Manual account transfer',
+            : value == 'manual_account_transfer'
+            ? 'Manual account transfer'
+            : 'Purchase/Transaction',
         onChanged: (v) => setState(() {
           movementType = v ?? movementType;
           sourceType = 'unallocated';
           destinationType = movementType == 'manual_account_transfer'
               ? 'unallocated'
+              : movementType == 'purchase_transaction'
+              ? 'outside_account'
               : 'chunk';
           sourceId = null;
           destinationId = null;
@@ -3076,28 +3086,30 @@ class _TransfersScreenState extends State<TransfersScreen> {
           errorText: submitted && sourceId == null ? 'Required' : null,
         ),
         if (source != null) _BalanceHint(text: _sourceBalanceSummary(source)),
-        _DropdownField(
-          label: 'To',
-          value: destinationType,
-          values: const ['chunk', 'unallocated', 'outside_account'],
-          labelFor: movementLabel,
-          onChanged: (v) => setState(() {
-            destinationType = v ?? destinationType;
-            destinationId = null;
-          }),
-        ),
-        if (destinationType != 'outside_account')
-          _EntityDropdown(
-            label: 'Destination',
-            type: destinationType == 'chunk' ? 'chunk' : 'unallocated',
-            id: destinationId,
-            accounts: accounts,
-            chunks: chunks,
-            onChanged: (v) => setState(() => destinationId = v),
-            errorText: submitted && destinationId == null ? 'Required' : null,
+        if (movementType != 'purchase_transaction') ...[
+          _DropdownField(
+            label: 'To',
+            value: destinationType,
+            values: const ['chunk', 'unallocated', 'outside_account'],
+            labelFor: movementLabel,
+            onChanged: (v) => setState(() {
+              destinationType = v ?? destinationType;
+              destinationId = null;
+            }),
           ),
-        if (destination != null)
-          _BalanceHint(text: _destinationBalanceSummary(destination)),
+          if (destinationType != 'outside_account')
+            _EntityDropdown(
+              label: 'Destination',
+              type: destinationType == 'chunk' ? 'chunk' : 'unallocated',
+              id: destinationId,
+              accounts: accounts,
+              chunks: chunks,
+              onChanged: (v) => setState(() => destinationId = v),
+              errorText: submitted && destinationId == null ? 'Required' : null,
+            ),
+          if (destination != null)
+            _BalanceHint(text: _destinationBalanceSummary(destination)),
+        ],
       ],
       _MoneyField(
         label: 'Amount',
@@ -3108,6 +3120,11 @@ class _TransfersScreenState extends State<TransfersScreen> {
         controller: note,
         decoration: const InputDecoration(labelText: 'Note'),
       ),
+      if (movementType == 'purchase_transaction' && source != null)
+        _BalanceHint(
+          text:
+              'Remaining ${sourceType == 'chunk' ? source['name'] : '${source['name']} unallocated'} balance: ${money(_sourceAvailable(source) - transferAmount)}',
+        ),
       _SubmitButton(
         saving: saving,
         label: 'Add Transfer',
@@ -3183,7 +3200,9 @@ class _TransfersScreenState extends State<TransfersScreen> {
                 m,
               ) {
                 return _ListRow(
-                  title: '${m['source_type']} to ${m['destination_type']}',
+                  title: m['movement_type'] == 'purchase_transaction'
+                      ? '${m['source_type']} purchase/transaction'
+                      : '${m['source_type']} to ${m['destination_type']}',
                   subtitle: m['note'].toString().isEmpty
                       ? formatDateTime(m['created_at'])
                       : m['note'].toString(),
@@ -4678,15 +4697,16 @@ void showTransferDetails(
               chunks,
             ),
           ),
-          _DetailLine(
-            label: 'To',
-            value: movementEndpointName(
-              movement['destination_type'],
-              movement['destination_id'],
-              accounts,
-              chunks,
+          if (movement['movement_type'] != 'purchase_transaction')
+            _DetailLine(
+              label: 'To',
+              value: movementEndpointName(
+                movement['destination_type'],
+                movement['destination_id'],
+                accounts,
+                chunks,
+              ),
             ),
-          ),
           _DetailLine(label: 'Amount', value: money(movement['amount'])),
           _DetailLine(
             label: 'Source',
@@ -4695,13 +4715,14 @@ void showTransferDetails(
               movement['source_balance_after'],
             ),
           ),
-          _DetailLine(
-            label: 'Dest.',
-            value: balanceBeforeAfterText(
-              movement['destination_balance_before'],
-              movement['destination_balance_after'],
+          if (movement['movement_type'] != 'purchase_transaction')
+            _DetailLine(
+              label: 'Dest.',
+              value: balanceBeforeAfterText(
+                movement['destination_balance_before'],
+                movement['destination_balance_after'],
+              ),
             ),
-          ),
           _DetailLine(
             label: 'Note',
             value: movement['note'].toString().isEmpty

@@ -46,6 +46,47 @@ class BudgetApiTests(unittest.TestCase):
             self.profile_id,
         )
 
+    def test_purchase_reduces_source_and_account_balances(self) -> None:
+        for source_type in ("chunk", "unallocated"):
+            with self.subTest(source_type=source_type):
+                account = self._account(source_type)
+                chunk = self._chunk("Groceries", account["id"], 0, None)
+                with main.db() as conn:
+                    conn.execute("UPDATE accounts SET balance = 200 WHERE id = ?", (account["id"],))
+                    conn.execute("UPDATE budget_chunks SET balance = 80 WHERE id = ?", (chunk["id"],))
+                movement = main.create_money_movement(
+                    main.MoneyMovementIn(
+                        movement_type="purchase_transaction",
+                        destination_type="outside_account",
+                        source_type=source_type,
+                        source_id=chunk["id"] if source_type == "chunk" else account["id"],
+                        amount=30,
+                        note="Groceries",
+                    ),
+                    self.profile_id,
+                )
+                self.assertEqual(movement["source_balance_before"], 80 if source_type == "chunk" else 120)
+                self.assertEqual(movement["source_balance_after"], 50 if source_type == "chunk" else 90)
+                self.assertEqual(movement["movement_type"], "purchase_transaction")
+                self.assertIsNone(movement["destination_id"])
+                with main.db() as conn:
+                    summary = main.account_summary(conn, account["id"], self.profile_id)
+                    self.assertEqual(summary["balance"], 170)
+                    self.assertEqual(summary["allocated_balance"], 50 if source_type == "chunk" else 80)
+                with self.assertRaises(HTTPException):
+                    main.create_money_movement(
+                        main.MoneyMovementIn(
+                            movement_type="purchase_transaction",
+                        destination_type="outside_account",
+                            source_type=source_type,
+                            source_id=chunk["id"] if source_type == "chunk" else account["id"],
+                            amount=500,
+                        ),
+                        self.profile_id,
+                    )
+                with main.db() as conn:
+                    self.assertEqual(main.account_summary(conn, account["id"], self.profile_id)["balance"], 170)
+
     def test_paycheck_allocates_chunks_across_accounts(self) -> None:
         checking = self._account("Checking")
         savings = self._account("Savings")

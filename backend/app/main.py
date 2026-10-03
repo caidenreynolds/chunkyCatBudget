@@ -151,7 +151,7 @@ class PaycheckAllocationIn(BaseModel):
 
 
 class MoneyMovementIn(BaseModel):
-    movement_type: Literal["allocation", "manual_account_transfer"] = "allocation"
+    movement_type: Literal["allocation", "manual_account_transfer", "purchase_transaction"] = "allocation"
     source_type: Literal["chunk", "unallocated", "paycheck"]
     source_id: int | None = None
     destination_type: Literal["chunk", "account", "unallocated", "outside_account"]
@@ -1488,6 +1488,11 @@ def create_money_movement(payload: MoneyMovementIn, profile_id: int = 1) -> dict
         get_profile_or_404(conn, profile_id)
         stamp = now()
         source_account_id: int | None = None
+        if payload.movement_type == "purchase_transaction":
+            if payload.source_type not in ("chunk", "unallocated"):
+                raise HTTPException(status_code=400, detail="Purchases require a chunk or unallocated source")
+            if payload.destination_type != "outside_account" or payload.destination_id is not None:
+                raise HTTPException(status_code=400, detail="Purchases cannot have a destination")
         destination_id = payload.destination_id
         if payload.destination_type == "chunk" and payload.destination_id is not None:
             possible_loan = get_chunk_or_404(conn, payload.destination_id)
@@ -1662,6 +1667,12 @@ def create_money_movement(payload: MoneyMovementIn, profile_id: int = 1) -> dict
             pass
         else:
             destination_balance_before = movement_endpoint_balance(conn, payload.destination_type, destination_id, profile_id)
+
+        if payload.movement_type == "purchase_transaction":
+            conn.execute(
+                "UPDATE accounts SET balance = balance - ?, updated_at = ? WHERE id = ?",
+                (payload.amount, stamp, source_account_id),
+            )
 
         source_balance_after = movement_endpoint_balance(conn, payload.source_type, payload.source_id, profile_id)
         destination_balance_after = movement_endpoint_balance(conn, payload.destination_type, destination_id, profile_id)
