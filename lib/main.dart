@@ -232,7 +232,6 @@ class _BudgetHomeState extends State<BudgetHome> {
     ('Accounts', Icons.account_balance_wallet_outlined),
     ('Chunks', Icons.savings_outlined),
     ('Transfers', Icons.swap_horiz_outlined),
-    ('Transactions', Icons.receipt_long_outlined),
     ('Paycheck Setup', Icons.payments_outlined),
     ('Settings', Icons.settings_outlined),
   ];
@@ -1102,7 +1101,7 @@ class _PhoneShell extends StatelessWidget {
     required this.child,
   });
 
-  static const routes = [0, 1, 5, 4, 9];
+  static const routes = [0, 1, 5, 4, 8];
 
   final int selected;
   final ValueChanged<int> onSelect;
@@ -1377,19 +1376,13 @@ class _ScreenHost extends StatelessWidget {
         refresh: refresh,
         canEdit: canEdit,
       ),
-      6 => TransactionsScreen(
+      6 => PaycheckSetupScreen(
         data: data,
         api: api,
         refresh: refresh,
         canEdit: canEdit,
       ),
-      7 => PaycheckSetupScreen(
-        data: data,
-        api: api,
-        refresh: refresh,
-        canEdit: canEdit,
-      ),
-      9 => MobileMoreScreen(goTo: goTo),
+      8 => MobileMoreScreen(goTo: goTo),
       _ => SettingsScreen(
         api: api,
         selectedProfile: selectedProfile,
@@ -1480,6 +1473,10 @@ class DashboardScreen extends StatelessWidget {
           ),
           const SizedBox(height: 20),
           _SectionTitle('Chunks'),
+          const _ChunkListHeader(
+            description: "Chunk's Account | Amount Per Paycheck",
+            amountLabel: 'Current Balance',
+          ),
           _DataCard(
             emptyText: 'No chunks yet',
             children: chunks.map((c) {
@@ -1739,6 +1736,10 @@ class BudgetOverviewScreen extends StatelessWidget {
           ),
           const SizedBox(height: 20),
           _SectionTitle('Chunk Deductions'),
+          const _ChunkListHeader(
+            description: "Chunk's Account",
+            amountLabel: 'Amount Per Paycheck',
+          ),
           _DataCard(
             emptyText: 'No active chunks yet',
             children: activeChunks.map((chunk) {
@@ -2438,6 +2439,11 @@ class _ChunksScreenState extends State<ChunksScreen> {
                 setState(() => sortAscending = !sortAscending),
           ),
           const SizedBox(height: 12),
+          const _ChunkListHeader(
+            description:
+                "Standard/Loan | Chunk's Account | Paycheck Profile Source | Amount Per Paycheck",
+            amountLabel: 'Current Balance',
+          ),
           _DataCard(
             emptyText: accounts.isEmpty
                 ? 'Create an account before adding chunks'
@@ -3341,139 +3347,6 @@ class _TransfersScreenState extends State<TransfersScreen> {
   }
 }
 
-class TransactionsScreen extends StatefulWidget {
-  const TransactionsScreen({
-    super.key,
-    required this.data,
-    required this.api,
-    required this.refresh,
-    required this.canEdit,
-  });
-  final Map<String, dynamic> data;
-  final BudgetApi api;
-  final VoidCallback refresh;
-  final bool canEdit;
-
-  @override
-  State<TransactionsScreen> createState() => _TransactionsScreenState();
-}
-
-class _TransactionsScreenState extends State<TransactionsScreen> {
-  late Future<List<Map<String, dynamic>>> transactions = _load();
-  int? accountId;
-  var allocationType = 'unallocated';
-  final amount = TextEditingController();
-  final description = TextEditingController();
-  var saving = false;
-  var submitted = false;
-
-  Future<List<Map<String, dynamic>>> _load() async =>
-      listOfMaps(await widget.api.get('/api/transactions'));
-
-  @override
-  Widget build(BuildContext context) {
-    final accounts = listOfMaps(widget.data['accounts']);
-    accountId ??= accounts.isNotEmpty ? accounts.first['id'] as int : null;
-    return _Page(
-      title: 'Transactions',
-      child: ListView(
-        padding: EdgeInsets.all(
-          MediaQuery.sizeOf(context).width < 600 ? 14 : 20,
-        ),
-        children: [
-          const _Notice(
-            'Transactions record money entering or leaving an account from outside the budget, such as purchases, deposits, fees, or income. Transfers move existing money between tracked locations.',
-          ),
-          const SizedBox(height: 14),
-          _FormCard(
-            children: [
-              _DropdownField<int>(
-                label: 'Account',
-                value: accountId,
-                values: accounts.map((a) => a['id'] as int).toList(),
-                labelFor: (id) => accounts
-                    .firstWhere((a) => a['id'] == id)['name']
-                    .toString(),
-                onChanged: (v) => setState(() => accountId = v),
-                errorText: submitted && accountId == null ? 'Required' : null,
-              ),
-              _MoneyField(
-                label: 'Amount',
-                controller: amount,
-                errorText: submitted && amount.text.trim().isEmpty
-                    ? 'Required'
-                    : null,
-              ),
-              TextField(
-                controller: description,
-                decoration: const InputDecoration(labelText: 'Description'),
-              ),
-              _DropdownField(
-                label: 'Allocation',
-                value: allocationType,
-                values: const ['chunk', 'unallocated', 'outside_account'],
-                onChanged: (v) =>
-                    setState(() => allocationType = v ?? allocationType),
-              ),
-              _SubmitButton(
-                saving: saving,
-                label: 'Add Transaction',
-                onPressed: widget.canEdit ? _save : null,
-              ),
-            ],
-          ),
-          const SizedBox(height: 20),
-          _SectionTitle('Transactions'),
-          FutureBuilder<List<Map<String, dynamic>>>(
-            future: transactions,
-            builder: (context, snapshot) {
-              final rows = snapshot.data ?? [];
-              return _DataCard(
-                emptyText: snapshot.connectionState == ConnectionState.waiting
-                    ? 'Loading transactions'
-                    : 'No transactions yet',
-                children: rows
-                    .map(
-                      (t) => _ListRow(
-                        title: t['description'].toString(),
-                        subtitle: t['allocation_type'].toString(),
-                        trailing: money(t['amount']),
-                      ),
-                    )
-                    .toList(),
-              );
-            },
-          ),
-        ],
-      ),
-    );
-  }
-
-  Future<void> _save() async {
-    setState(() => submitted = true);
-    if (accountId == null || amount.text.trim().isEmpty) return;
-    setState(() => saving = true);
-    try {
-      await widget.api.post('/api/transactions', {
-        'account_id': accountId,
-        'amount': parseMoney(amount.text),
-        'description': description.text,
-        'allocation_type': allocationType,
-        'allocation_id': null,
-      });
-      setState(() => transactions = _load());
-      widget.refresh();
-      if (!mounted) return;
-      toast(context, 'Transaction added');
-    } catch (error) {
-      if (!mounted) return;
-      toast(context, error.toString());
-    } finally {
-      if (mounted) setState(() => saving = false);
-    }
-  }
-}
-
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({
     super.key,
@@ -3724,7 +3597,7 @@ class MobileMoreScreen extends StatelessWidget {
           _MoreTile(
             icon: Icons.payments_outlined,
             title: 'Paycheck Setup',
-            onTap: () => goTo(7),
+            onTap: () => goTo(6),
           ),
           _MoreTile(
             icon: Icons.add_circle_outline,
@@ -3742,14 +3615,9 @@ class MobileMoreScreen extends StatelessWidget {
             onTap: () => goTo(1),
           ),
           _MoreTile(
-            icon: Icons.receipt_long_outlined,
-            title: 'Transactions',
-            onTap: () => goTo(6),
-          ),
-          _MoreTile(
             icon: Icons.settings_outlined,
             title: 'Settings',
-            onTap: () => goTo(8),
+            onTap: () => goTo(7),
           ),
         ],
       ),
@@ -3950,6 +3818,47 @@ class _DataCard extends StatelessWidget {
               ),
             )
           : Column(children: children),
+    );
+  }
+}
+
+class _ChunkListHeader extends StatelessWidget {
+  const _ChunkListHeader({
+    required this.description,
+    required this.amountLabel,
+  });
+
+  final String description;
+  final String amountLabel;
+
+  @override
+  Widget build(BuildContext context) {
+    final textTheme = Theme.of(context).textTheme;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 8, 20, 12),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            flex: 3,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Chunk Name', style: textTheme.titleSmall),
+                Text(description, style: textTheme.bodySmall),
+              ],
+            ),
+          ),
+          const SizedBox(width: 16),
+          Flexible(
+            child: Text(
+              amountLabel,
+              textAlign: TextAlign.right,
+              style: textTheme.titleSmall,
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
