@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import os
+import csv
+import io
+import json
+import math
 import hashlib
 import hmac
 import sqlite3
@@ -1088,7 +1092,11 @@ def upsert_paycheck_profile(payload: PaycheckProfileIn, profile_id: int = 1) -> 
                 ),
             )
             profile_id_to_return = cursor.lastrowid
-        return row_to_dict(conn.execute("SELECT * FROM paycheck_profiles WHERE id = ?", (profile_id_to_return,)).fetchone())
+        result = dict(conn.execute("SELECT * FROM paycheck_profiles WHERE id = ?", (profile_id_to_return,)).fetchone())
+        allocated = conn.execute("SELECT COALESCE(SUM(amount_per_paycheck), 0) FROM budget_chunks WHERE profile_id = ? AND paycheck_profile_id = ? AND is_active = 1", (profile_id, profile_id_to_return)).fetchone()[0]
+        result["chunk_total"] = allocated
+        result["chunk_shortage"] = max(0, allocated - payload.net_pay_amount) if existing and payload.net_pay_amount < existing["net_pay_amount"] else 0
+        return result
 
 
 @app.delete("/api/paycheck-profiles/{paycheck_profile_id}")
@@ -1747,3 +1755,120 @@ def create_transaction(payload: TransactionIn, profile_id: int = 1) -> dict[str,
         )
         conn.execute("UPDATE accounts SET balance = balance + ?, updated_at = ? WHERE id = ?", (payload.amount, stamp, payload.account_id))
         return row_to_dict(conn.execute("SELECT * FROM transactions WHERE id = ?", (cursor.lastrowid,)).fetchone())
+
+
+class RestoreProfileIn(BaseModel):
+    csv_data: str = Field(max_length=10_000_000)
+    user_id: int
+    target_profile_id: int | None = None
+    name: str | None = None
+    confirm_overwrite: bool = False
+
+
+BACKUP_FIELDS = {
+    "account": ("accounts", AccountIn, ["name", "type", "source_mode", "balance", "is_active", "sort_order"]),
+    "paycheck": ("paycheck_profiles", PaycheckProfileIn, ["name", "gross_pay_amount", "net_pay_amount", "net_pay_mode", "pay_frequency", "default_account_id"]),
+    "chunk": ("budget_chunks", ChunkIn, ["name", "account_id", "paycheck_profile_id", "chunk_type", "amount_per_paycheck", "balance", "loan_balance", "loan_interest_rate", "is_active"]),
+}
+
+
+@app.get("/api/budget-profiles/{profile_id}/export")
+def export_profile(profile_id: int, user_id: int) -> dict[str, str]:
+    with db() as conn:
+        profile = get_profile_or_404(conn, profile_id)
+        if not conn.execute("SELECT 1 FROM user_profile_access WHERE user_id = ? AND profile_id = ?", (user_id, profile_id)).fetchone():
+            raise HTTPException(403, "Profile access required")
+        output = io.StringIO(newline="")
+        writer = csv.writer(output)
+        writer.writerow(["format", "record_type", "id", "data"])
+        writer.writerow(["chunky-cat-budget-v1", "profile", "", json.dumps({"name": profile["name"]})])
+        for kind, (table, _, fields) in BACKUP_FIELDS.items():
+            for row in conn.execute(f"SELECT * FROM {table} WHERE profile_id = ? ORDER BY id", (profile_id,)):
+                writer.writerow(["chunky-cat-budget-v1", kind, row["id"], json.dumps({field: row[field] for field in fields}, ensure_ascii=False, allow_nan=False)])
+        return {"filename": f"budget-profile-{profile_id}.csv", "csv_data": output.getvalue()}
+
+
+@app.post("/api/budget-profiles/import")
+def import_profile(payload: RestoreProfileIn) -> dict[str, Any]:
+    # Validate the complete file and its references before changing any stored data.
+    records: dict[str, dict[int, dict]] = {kind: {} for kind in BACKUP_FIELDS}
+    profile_name = None
+    try:
+        reader = csv.DictReader(io.StringIO(payload.csv_data.lstrip("\ufeff")), strict=True)
+        if reader.fieldnames != ["format", "record_type", "id", "data"]:
+            raise ValueError("Invalid CSV header")
+        for row in reader:
+            if row["format"] != "chunky-cat-budget-v1" or None in row:
+                raise ValueError("Unsupported backup format")
+            kind = row["record_type"]
+            data = json.loads(row["data"])
+            if not isinstance(data, dict):
+                raise ValueError("Invalid record")
+            if kind == "profile":
+                if profile_name is not None or not isinstance(data.get("name"), str) or not data["name"].strip():
+                    raise ValueError("Invalid profile record")
+                profile_name = data["name"]
+                continue
+            if kind not in BACKUP_FIELDS:
+                raise ValueError("Unknown record type")
+            record_id = int(row["id"])
+            if record_id <= 0 or record_id in records[kind]:
+                raise ValueError("Invalid or duplicate record ID")
+            _, model, fields = BACKUP_FIELDS[kind]
+            if set(data) != set(fields):
+                raise ValueError("Missing or unexpected record fields")
+            if any(isinstance(v, (int, float)) and not math.isfinite(v) for v in data.values()):
+                raise ValueError("Non-finite amount")
+            model.model_validate(data)
+            records[kind][record_id] = data
+        if profile_name is None:
+            raise ValueError("Missing profile record")
+        for data in records["paycheck"].values():
+            if data["default_account_id"] is not None and data["default_account_id"] not in records["account"]:
+                raise ValueError("Missing default account")
+        for data in records["chunk"].values():
+            if data["account_id"] is not None and data["account_id"] not in records["account"]:
+                raise ValueError("Missing chunk account")
+            if data["account_id"] is None:
+                raise ValueError("Standard chunk needs an account")
+            if data["paycheck_profile_id"] is not None and data["paycheck_profile_id"] not in records["paycheck"]:
+                raise ValueError("Missing chunk paycheck")
+            if data["amount_per_paycheck"] > 0 and data["paycheck_profile_id"] is None:
+                raise ValueError("Chunk needs a paycheck")
+    except (ValueError, TypeError, KeyError, csv.Error) as error:
+        raise HTTPException(400, f"Invalid backup: {error}") from error
+    with db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        if not conn.execute("SELECT 1 FROM users WHERE id = ?", (payload.user_id,)).fetchone():
+            raise HTTPException(404, "User not found")
+        stamp = now()
+        if payload.target_profile_id is not None:
+            target = get_profile_or_404(conn, payload.target_profile_id)
+            require_profile_admin(conn, payload.target_profile_id, payload.user_id)
+            if not payload.confirm_overwrite:
+                raise HTTPException(400, "Explicit overwrite confirmation required")
+            profile_id = target["id"]
+            conn.execute("DELETE FROM paycheck_allocations WHERE paycheck_id IN (SELECT id FROM paychecks WHERE profile_id = ?)", (profile_id,))
+            for table in ["transactions", "money_movements", "paychecks", "budget_chunks", "paycheck_profiles", "accounts"]:
+                conn.execute(f"DELETE FROM {table} WHERE profile_id = ?", (profile_id,))
+            conn.execute("UPDATE budget_profiles SET updated_at = ? WHERE id = ?", (stamp, profile_id))
+        else:
+            name = (payload.name or profile_name).strip()
+            if not name:
+                raise HTTPException(400, "Profile name required")
+            profile_id = conn.execute("INSERT INTO budget_profiles (name, owner_user_id, created_at, updated_at) VALUES (?, ?, ?, ?)", (name, payload.user_id, stamp, stamp)).lastrowid
+            conn.execute("INSERT INTO user_profile_access (user_id, profile_id, role, created_at) VALUES (?, ?, 'admin', ?)", (payload.user_id, profile_id, stamp))
+        maps: dict[str, dict[int, int]] = {kind: {} for kind in BACKUP_FIELDS}
+        for kind, (table, _, _) in BACKUP_FIELDS.items():
+            for old_id, original in records[kind].items():
+                data = dict(original)
+                for field, parent in [("account_id", "account"), ("default_account_id", "account"), ("paycheck_profile_id", "paycheck")]:
+                    if field in data and data[field] is not None:
+                        data[field] = maps[parent][data[field]]
+                data.update(profile_id=profile_id, updated_at=stamp)
+                if kind != "paycheck":
+                    data["created_at"] = stamp
+                columns = list(data)
+                cursor = conn.execute(f"INSERT INTO {table} ({','.join(columns)}) VALUES ({','.join('?' for _ in columns)})", list(data.values()))
+                maps[kind][old_id] = cursor.lastrowid
+        return dict(conn.execute("SELECT * FROM budget_profiles WHERE id = ?", (profile_id,)).fetchone())

@@ -1,5 +1,7 @@
 import 'dart:convert';
 
+import 'backup_file.dart';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
@@ -765,6 +767,7 @@ class _ProfileSelectionScreenState extends State<ProfileSelectionScreen> {
   var creating = false;
   var acceptingInvitationId = 0;
   var selectionMode = false;
+  var importing = false;
 
   Future<Map<String, List<Map<String, dynamic>>>> _loadProfileData() async {
     final profiles = listOfMaps(
@@ -826,6 +829,11 @@ class _ProfileSelectionScreenState extends State<ProfileSelectionScreen> {
                   style: const TextStyle(fontWeight: FontWeight.w800),
                 ),
                 const SizedBox(height: 14),
+                OutlinedButton.icon(
+                  onPressed: importing ? null : () => _importBackup(rows),
+                  icon: const Icon(Icons.upload_file),
+                  label: Text(importing ? 'Importing…' : 'Import CSV Backup'),
+                ),
                 _SectionTitle('Profiles You Can Access'),
                 Card(
                   child: rows.isEmpty
@@ -877,7 +885,11 @@ class _ProfileSelectionScreenState extends State<ProfileSelectionScreen> {
                               ),
                               trailing: selectionMode
                                   ? const Icon(Icons.drag_handle)
-                                  : const Icon(Icons.chevron_right),
+                                  : IconButton(
+                                      tooltip: 'Export CSV backup',
+                                      icon: const Icon(Icons.download),
+                                      onPressed: () => _exportBackup(id),
+                                    ),
                               onTap: selectionMode
                                   ? () => setState(() {
                                       if (selectedProfileIds.contains(id)) {
@@ -946,6 +958,91 @@ class _ProfileSelectionScreenState extends State<ProfileSelectionScreen> {
         ),
       ),
     );
+  }
+
+  Future<void> _exportBackup(int id) async {
+    try {
+      final backup = await widget.api.get(
+        '/api/budget-profiles/$id/export?user_id=${widget.user['id']}',
+      );
+      downloadBackup(
+        backup['filename'] as String,
+        backup['csv_data'] as String,
+      );
+    } catch (error) {
+      if (mounted) toast(context, errorMessage(error));
+    }
+  }
+
+  Future<void> _importBackup(List<Map<String, dynamic>> profiles) async {
+    setState(() => importing = true);
+    try {
+      final csv = await pickBackupFile();
+      if (csv == null || !mounted) return;
+      final target = await showDialog<int>(
+        context: context,
+        builder: (context) => SimpleDialog(
+          title: const Text('Restore CSV Backup'),
+          children: [
+            const Padding(
+              padding: EdgeInsets.all(16),
+              child: Text(
+                'Restore accounts, paycheck plans, chunks and current balances. History and sharing settings are not included.',
+              ),
+            ),
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(context, 0),
+              child: const Text('Create a new profile'),
+            ),
+            for (final profile in profiles.where((p) => p['role'] == 'admin'))
+              SimpleDialogOption(
+                onPressed: () => Navigator.pop(context, profile['id'] as int),
+                child: Text('Overwrite ${profile['name']}'),
+              ),
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+          ],
+        ),
+      );
+      if (target == null || !mounted) return;
+      if (target != 0) {
+        final confirmed = await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('Permanently overwrite profile?'),
+            content: const Text(
+              'This replaces all accounts, paycheck plans, chunks and balances in the selected profile. All existing paycheck history, transactions, transfers and notes will be permanently deleted. Existing members retain access. This is irreversible.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text('Permanently Overwrite'),
+              ),
+            ],
+          ),
+        );
+        if (confirmed != true || !mounted) return;
+      }
+      await widget.api.post('/api/budget-profiles/import', {
+        'csv_data': csv,
+        'user_id': widget.user['id'],
+        if (target != 0) 'target_profile_id': target,
+        'confirm_overwrite': target != 0,
+      });
+      if (!mounted) return;
+      reload();
+      toast(context, 'Backup restored');
+    } catch (error) {
+      if (mounted) toast(context, errorMessage(error));
+    } finally {
+      if (mounted) setState(() => importing = false);
+    }
   }
 
   Future<void> _createProfile() async {
@@ -1377,6 +1474,7 @@ class _ScreenHost extends StatelessWidget {
         canEdit: canEdit,
       ),
       6 => PaycheckSetupScreen(
+        goTo: goTo,
         data: data,
         api: api,
         refresh: refresh,
@@ -1763,11 +1861,13 @@ class PaycheckSetupScreen extends StatefulWidget {
     required this.api,
     required this.refresh,
     required this.canEdit,
+    required this.goTo,
   });
   final Map<String, dynamic> data;
   final BudgetApi api;
   final VoidCallback refresh;
   final bool canEdit;
+  final ValueChanged<int> goTo;
 
   @override
   State<PaycheckSetupScreen> createState() => _PaycheckSetupScreenState();
@@ -1945,10 +2045,32 @@ class _PaycheckSetupScreenState extends State<PaycheckSetupScreen> {
         'pay_frequency': frequency,
         'default_account_id': defaultAccountId,
       });
+      final allocated = parseMoney('${saved['chunk_total']}');
+      final shortage = parseMoney('${saved['chunk_shortage']}');
       selectedPaycheckProfileId = saved['id'] as int?;
       widget.refresh();
       if (!mounted) return;
-      toast(context, 'Paycheck profile saved');
+      if (shortage > 0.005) {
+        await showDialog<void>(
+          context: context,
+          barrierDismissible: false,
+          builder: (context) => AlertDialog(
+            title: const Text('Readjust Chunks'),
+            content: Text(
+              'Chunks assigned to this paycheck total ${money(allocated)}, exceeding the new paycheck amount by ${money(shortage)}. Readjust your chunks to compensate for the shortage.',
+            ),
+            actions: [
+              FilledButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Go to Chunks'),
+              ),
+            ],
+          ),
+        );
+        if (mounted) widget.goTo(4);
+      } else {
+        toast(context, 'Paycheck profile saved');
+      }
     } catch (error) {
       if (!mounted) return;
       toast(context, error.toString());
@@ -2013,6 +2135,7 @@ class AccountsScreen extends StatefulWidget {
 class _AccountsScreenState extends State<AccountsScreen> {
   final selectedAccountIds = <int>{};
   var selectionMode = false;
+  var importing = false;
 
   @override
   Widget build(BuildContext context) {
